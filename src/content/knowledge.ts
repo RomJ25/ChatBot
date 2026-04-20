@@ -99,11 +99,3 @@ const HAND_AUTHORED: KnowledgeItem[] = [
  * בעתיד — כרטיסים בממשק) צריכים רק את הרשימה הזו.
  */
 export const KNOWLEDGE: KnowledgeItem[] = [...HAND_AUTHORED, ...EXTERNAL];
-
-/** כל הפריטים מקטגוריה מסוימת. */
-export function knowledgeByKind(
-  kind: KnowledgeKind,
-  items: KnowledgeItem[] = KNOWLEDGE,
-): KnowledgeItem[] {
-  return items.filter((i) => i.kind === kind);
-}

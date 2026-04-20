@@ -1,4 +1,4 @@
-import { TEAM, type Project, type TeamContent } from "./team";
+import { TEAM, type Project, type TeamContent, type TeamMember } from "./team";
 import {
   KNOWLEDGE,
   type KnowledgeItem,
@@ -14,7 +14,7 @@ import {
  *      links, notes). Hand-authored OR pulled from external sources.
  *
  * Whenever either changes, the LLM's grounding automatically updates.
- * Hard rules at the bottom tell the model to stay within these facts.
+ * Rules at the bottom tell the model to stay within these facts.
  */
 export function buildSystemPrompt(
   team: TeamContent = TEAM,
@@ -24,17 +24,12 @@ export function buildSystemPrompt(
 
   const commanderBlock = team.commander
     ? `## מפקד/ת הצוות
-- **${team.commander.name}** — ${team.commander.role ?? team.commander.responsibility}`
+${memberLine(team.commander)}`
     : "";
 
   const membersBlock = team.members.length
     ? `## חברי/ות הצוות
-${team.members
-  .map(
-    (m) =>
-      `- **${m.name}**${m.role ? ` (${m.role})` : ""} — ${m.responsibility}`,
-  )
-  .join("\n")}`
+${team.members.map(memberLine).join("\n")}`
     : "";
 
   const projectsBlock = team.projects.length
@@ -47,12 +42,15 @@ ${team.projects.map(projectLine).join("\n")}`
   const prompt = `אתה העוזר החכם של **${team.name}**.
 ${team.short}
 
+תפקידך לעזור למשתמשים להכיר את הצוות ואת העשייה שלו: חברים, תחומי אחריות, פרויקטים, תהליכים ומושגים. התבסס אך ורק על העובדות שמפורטות למטה.
+
 ${about}
 
 ## טון ושפה
 - קול: ${team.tone.voice}
 - קהל יעד: ${team.tone.audience}
-- שפה: ${team.tone.language}
+- שפה: ענה תמיד ב${team.tone.language}, גם כאשר השאלה בשפה אחרת.
+- אורך: תשובות קצרות וממוקדות. משפט אחד לעובדה פשוטה, רשימה למספר פריטים. הימנע מהקדמות מיותרות.
 
 ${commanderBlock}
 
@@ -62,28 +60,32 @@ ${projectsBlock}
 
 ${knowledgeBlock}
 
-## כללים קשיחים
-- ענה **רק** על בסיס המידע שמופיע למעלה.
-- אם אין לך תשובה לשאלה — אמור זאת בכנות ("אין לי מידע על כך") במקום להמציא.
-- אל תמציא שמות, תפקידים, פרויקטים, מולקולות או עובדות שלא מופיעים כאן.
-- כשאתה מתייחס לפריט ידע ספציפי, תוכל לציין את הכותרת שלו בהדגשה.
-- השתמש ב-Markdown לעיצוב: **הדגשות**, רשימות, כותרות ו-\`code\` כשרלוונטי.
-- שמור על טון אחיד כפי שמוגדר למעלה.`;
+## כללים
+- ענה אך ורק על בסיס המידע שמופיע למעלה. אל תמציא שמות, תפקידים, פרויקטים, מולקולות או עובדות.
+- כשחסר מידע — אמור זאת ישירות ("אין לי מידע על כך") והצע למי אפשר לפנות (המפקד/ת או חבר/ת הצוות הרלוונטי/ת, לפי הנושא).
+- כשאתה מצטט פריט ידע, ציין את הכותרת שלו ב**הדגשה**.
+- השתמש ב-Markdown: הדגשות, רשימות ו-\`code\` כשרלוונטי.`;
 
   return prompt.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function memberLine(m: TeamMember): string {
+  // Only name:              "- **name**"
+  // Only role:              "- **name** — role"              (e.g. commander)
+  // Only responsibility:    "- **name** — responsibility"    (typical member)
+  // Both:                   "- **name** (role) — responsibility"
+  if (m.role && m.responsibility) {
+    return `- **${m.name}** (${m.role}) — ${m.responsibility}`;
+  }
+  const detail = m.responsibility ?? m.role;
+  return detail ? `- **${m.name}** — ${detail}` : `- **${m.name}**`;
+}
+
 function projectLine(p: Project): string {
-  const extras = [
-    p.status ? `סטטוס: ${p.status}` : "",
-    typeof p.progress === "number" ? `התקדמות: ${p.progress}%` : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
   const base = p.description
     ? `- **${p.name}** — ${p.description}`
     : `- **${p.name}**`;
-  return extras ? `${base} _(${extras})_` : base;
+  return p.status ? `${base} _(סטטוס: ${p.status})_` : base;
 }
 
 /**
@@ -130,5 +132,5 @@ function renderItem(item: KnowledgeItem): string {
 /** Welcome message shown on first load. Overridable via `TEAM.welcome`. */
 export function buildWelcome(team: TeamContent = TEAM): string {
   if (team.welcome && team.welcome.trim()) return team.welcome;
-  return `שלום. אני העוזר החכם של **${team.name}**. אפשר לשאול אותי על חברי הצוות, הפרויקטים, או כל דבר אחר. **במה אפשר לעזור?**`;
+  return `שלום! אני העוזר החכם של **${team.name}**. אפשר לשאול אותי על חברי הצוות, הפרויקטים, ועל העשייה שלנו. **במה אפשר לעזור?**`;
 }

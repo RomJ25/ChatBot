@@ -77,11 +77,11 @@ async function buildUserContent(text: string, files: File[]): Promise<string> {
 export default function ChatBot() {
   const client = useMemo(() => createDefaultClient(), []);
 
-  const [messages, setMessages] = useState<Message[]>([
+  const [messages, setMessages] = useState<Message[]>(() => [
     {
       id: 1,
       sender: "bot",
-      content: WELCOME_CONTENT,
+      content: client ? WELCOME_CONTENT : NOT_CONFIGURED_CONTENT,
       timestamp: now(),
       excludeFromLlm: true,
     },
@@ -184,14 +184,6 @@ export default function ChatBot() {
     }
   };
 
-  const handleCardMouseMove = (e: React.MouseEvent<HTMLElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    e.currentTarget.style.setProperty("--mouse-x", `${x}px`);
-    e.currentTarget.style.setProperty("--mouse-y", `${y}px`);
-  };
-
   const scheduleFlush = () => {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
@@ -253,20 +245,7 @@ export default function ChatBot() {
   };
 
   const runStream = async (historyBase: Message[]) => {
-    if (!client) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now() + Math.floor(Math.random() * 1000) + 1,
-          sender: "bot",
-          content: NOT_CONFIGURED_CONTENT,
-          error: true,
-          timestamp: now(),
-          excludeFromLlm: true,
-        },
-      ]);
-      return;
-    }
+    if (!client) return;
 
     const llmMessages = toLlmMessages(historyBase);
     if (llmMessages.length === 0) return;
@@ -376,6 +355,7 @@ export default function ChatBot() {
 
   const handleSend = async (overrideText?: string) => {
     if (isStreaming) return;
+    if (!client) return;
     const query = typeof overrideText === "string" ? overrideText : inputValue;
     const hasFiles = attachedFiles.length > 0;
     if (!query.trim() && !hasFiles) return;
@@ -399,6 +379,10 @@ export default function ChatBot() {
 
     // Build LLM content (reads attached text files); may take a tick.
     const llmContent = await buildUserContent(query, currentFiles);
+    // Persist llmContent on the user message so retries preserve file contents.
+    setMessages((prev) =>
+      prev.map((m) => (m.id === userMsg.id ? { ...m, llmContent } : m)),
+    );
     const historyForLlm = visibleHistory.map((m) =>
       m.id === userMsg.id ? { ...m, llmContent } : m,
     );
@@ -875,15 +859,15 @@ export default function ChatBot() {
         <div className="relative z-20 pt-2 pb-6 px-2 hw-accelerate shrink-0">
           <div className="flex flex-wrap gap-2 mb-4">
             {[
-              "סכם לי מה יצא לך ללמוד היום",
-              "תן לי רעיון לפוסט קצר",
-              "הסבר לי מושג בפשטות",
-              "עזור לי לכתוב מייל",
+              "מי מפקד/ת הצוות?",
+              "אילו פרויקטים קיימים?",
+              "ספר על חברי הצוות",
+              "על מה הצוות מתמקד?",
             ].map((chip, idx) => (
               <button
                 key={idx}
                 onClick={() => void handleSend(chip)}
-                disabled={isStreaming}
+                disabled={isStreaming || !client}
                 className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium text-[#435569] flex items-center gap-2 tracking-tight hw-accelerate disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Search className="w-3.5 h-3.5 text-[#2563eb]/80 icon-glow" />
@@ -968,9 +952,12 @@ export default function ChatBot() {
             ) : (
               <button
                 onClick={() => void handleSend()}
-                disabled={!inputValue.trim() && attachedFiles.length === 0}
+                disabled={
+                  !client ||
+                  (!inputValue.trim() && attachedFiles.length === 0)
+                }
                 className={`w-12 h-12 mb-0.5 rounded-full flex items-center justify-center shrink-0 ${
-                  inputValue.trim() || attachedFiles.length > 0
+                  client && (inputValue.trim() || attachedFiles.length > 0)
                     ? "bg-gradient-to-br from-[#3b82f6] to-[#2563eb] text-white send-btn-active"
                     : "bg-[#0f172a]/5 text-[#7f90a8] cursor-not-allowed"
                 }`}
