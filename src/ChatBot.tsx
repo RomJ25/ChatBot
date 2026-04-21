@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   FileText,
@@ -16,11 +16,20 @@ import { createDefaultClient, LLMError, type ChatMessage } from "./llm";
 import { TEAM } from "./content/team";
 import { buildWelcome } from "./content/systemPrompt";
 
+// Keep only the display-relevant fields on a message. Holding `File` refs
+// here would pin blob backing for the life of the chat (a 50-message chat
+// with large PDF attachments would otherwise leak hundreds of MB).
+type AttachedFileMeta = {
+  name: string;
+  size: number;
+  type: string;
+};
+
 type Message = {
   id: number;
   sender: "bot" | "user";
   content: string;
-  files?: File[];
+  files?: AttachedFileMeta[];
   timestamp: string;
   streaming?: boolean;
   error?: boolean;
@@ -51,28 +60,59 @@ const now = () =>
 const TEXT_FILE_RE =
   /\.(txt|md|markdown|json|jsonl|csv|tsv|log|ya?ml|toml|ini|conf|env|sh|bash|zsh|py|rb|go|rs|java|kt|swift|c|h|cc|cpp|hpp|cs|js|mjs|cjs|ts|tsx|jsx|html|htm|css|scss|less|xml|svg)$/i;
 
+// Keep prompts bounded: a runaway log file shouldn't silently consume the
+// entire token budget (or lock up the browser). Anything larger is attached
+// by name only.
+const MAX_TEXT_FILE_BYTES = 500 * 1024;
+
 async function buildUserContent(text: string, files: File[]): Promise<string> {
   if (!files || files.length === 0) return text;
   const parts: string[] = [];
   if (text.trim()) parts.push(text);
   for (const f of files) {
     const isText = /^text\//.test(f.type) || TEXT_FILE_RE.test(f.name);
-    if (isText) {
-      try {
-        const content = await f.text();
-        const lang = (f.name.split(".").pop() ?? "").toLowerCase();
-        parts.push(`📎 \`${f.name}\`:\n\n\`\`\`${lang}\n${content}\n\`\`\``);
-      } catch {
-        parts.push(`📎 \`${f.name}\` (שגיאה בקריאת הקובץ)`);
-      }
-    } else {
+    if (!isText) {
       parts.push(
         `📎 \`${f.name}\` (${f.type || "סוג לא ידוע"}) — תוכן הקובץ לא נקרא`,
       );
+      continue;
+    }
+    if (f.size > MAX_TEXT_FILE_BYTES) {
+      const kb = Math.round(f.size / 1024);
+      parts.push(
+        `📎 \`${f.name}\` (${kb} KB) — גדול מדי; תוכנו לא צורף.`,
+      );
+      continue;
+    }
+    try {
+      const content = await f.text();
+      const lang = (f.name.split(".").pop() ?? "").toLowerCase();
+      // Use a fence long enough to outrun any backtick run in the content,
+      // otherwise a file that itself contains ``` would close the fence early
+      // and leak its tail into the prompt (and break the local markdown render).
+      const fence = longestBacktickFence(content);
+      parts.push(`📎 \`${f.name}\`:\n\n${fence}${lang}\n${content}\n${fence}`);
+    } catch {
+      parts.push(`📎 \`${f.name}\` (שגיאה בקריאת הקובץ)`);
     }
   }
   return parts.join("\n\n");
 }
+
+function longestBacktickFence(content: string): string {
+  let longest = 0;
+  const re = /`+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    if (m[0].length > longest) longest = m[0].length;
+  }
+  return "`".repeat(Math.max(3, longest + 1));
+}
+
+// Monotonically increasing ID generator — avoids Date.now() collisions when
+// multiple messages are created inside the same millisecond.
+let nextMessageId = 2;
+const mkId = () => ++nextMessageId;
 
 export default function ChatBot() {
   const client = useMemo(() => createDefaultClient(), []);
@@ -90,58 +130,74 @@ export default function ChatBot() {
   const [isTyping, setIsTyping] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isInputFocused, setIsInputFocused] = useState(false);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
-  const [isAtBottom, setIsAtBottom] = useState(true);
   const [showScrollButton, setShowScrollButton] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const spotlightRef = useRef<HTMLDivElement | null>(null);
   const dragCounter = useRef(0);
+  const isAtBottomRef = useRef(true);
 
   const abortRef = useRef<AbortController | null>(null);
   const streamingIdRef = useRef<number | null>(null);
   const bufferRef = useRef("");
   const rafRef = useRef<number | null>(null);
   const lastMouseRaf = useRef<number | null>(null);
+  const abortedRef = useRef(false);
 
+  // Mouse-reactive spotlight: write to a CSS variable directly so we don't
+  // re-render the React tree on every frame. Reads `--mouse-x` / `--mouse-y`
+  // from the target element's style.
   useEffect(() => {
     const onMove = (e: MouseEvent) => {
       if (lastMouseRaf.current !== null) return;
       lastMouseRaf.current = requestAnimationFrame(() => {
-        setMousePos({ x: e.clientX, y: e.clientY });
         lastMouseRaf.current = null;
+        const el = spotlightRef.current;
+        if (!el) return;
+        el.style.background = `radial-gradient(800px circle at ${e.clientX}px ${e.clientY}px, rgba(255, 255, 255, 0.4), transparent 50%)`;
       });
     };
-    window.addEventListener("mousemove", onMove);
-    return () => window.removeEventListener("mousemove", onMove);
+    window.addEventListener("mousemove", onMove, { passive: true });
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      if (lastMouseRaf.current !== null) {
+        cancelAnimationFrame(lastMouseRaf.current);
+        lastMouseRaf.current = null;
+      }
+    };
   }, []);
 
-  const handleScroll = () => {
-    if (!chatContainerRef.current) return;
-    const { scrollTop, scrollHeight, clientHeight } = chatContainerRef.current;
-    const atBottom = scrollHeight - scrollTop - clientHeight < 80;
-    setIsAtBottom(atBottom);
-    setShowScrollButton(!atBottom);
-  };
-
-  const scrollToBottom = (force = false) => {
+  const handleScroll = useCallback(() => {
     const c = chatContainerRef.current;
     if (!c) return;
-    if (force || isAtBottom) {
-      c.scrollTop = c.scrollHeight;
+    const atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 80;
+    if (atBottom !== isAtBottomRef.current) {
+      isAtBottomRef.current = atBottom;
+      setShowScrollButton(!atBottom);
     }
-  };
+  }, []);
 
-  const scrollToBottomSmooth = () => {
+  const scrollToBottom = useCallback((force = false) => {
+    const c = chatContainerRef.current;
+    if (!c) return;
+    if (force || isAtBottomRef.current) {
+      c.scrollTop = c.scrollHeight;
+      isAtBottomRef.current = true;
+      setShowScrollButton(false);
+    }
+  }, []);
+
+  const scrollToBottomSmooth = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  }, []);
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, isTyping]);
+  }, [messages, isTyping, scrollToBottom]);
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -178,7 +234,23 @@ export default function ChatBot() {
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Escape aborts an in-flight stream without moving focus away.
+    if (e.key === "Escape" && isStreaming) {
+      e.preventDefault();
+      handleAbort();
+      return;
+    }
+    // Don't send while the IME is composing (Hebrew auto-suggest on mobile,
+    // CJK IME, etc.) — `isComposing` indicates the keystroke is part of a
+    // composition, where Enter means "confirm candidate", not "submit".
+    if (
+      e.key === "Enter" &&
+      !e.shiftKey &&
+      !e.nativeEvent.isComposing &&
+      // Android Chrome sometimes reports keyCode 229 for composing keys even
+      // when isComposing is false; guard that too.
+      e.keyCode !== 229
+    ) {
       e.preventDefault();
       void handleSend();
     }
@@ -210,7 +282,7 @@ export default function ChatBot() {
 
   const ensureStreamingBubble = (): number => {
     if (streamingIdRef.current !== null) return streamingIdRef.current;
-    const id = Date.now() + Math.floor(Math.random() * 1000) + 1;
+    const id = mkId();
     streamingIdRef.current = id;
     setMessages((prev) => [
       ...prev,
@@ -226,19 +298,35 @@ export default function ChatBot() {
   };
 
   const handleAbort = () => {
+    abortedRef.current = true;
     abortRef.current?.abort();
     abortRef.current = null;
   };
+
+  // Clean up any in-flight stream / animation frame on unmount.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
 
   const toLlmMessages = (list: Message[]): ChatMessage[] => {
     const out: ChatMessage[] = [];
     for (const m of list) {
       if (m.excludeFromLlm) continue;
       if (m.error) continue;
-      if (!m.content || !m.content.trim()) continue;
+      // Prefer llmContent (carries attached file text) over the raw content.
+      // This matters for files-only user messages where `content` is "".
+      const body = m.llmContent ?? m.content;
+      if (!body || !body.trim()) continue;
       out.push({
         role: m.sender === "user" ? "user" : "assistant",
-        content: m.llmContent ?? m.content,
+        content: body,
       });
     }
     return out;
@@ -254,6 +342,7 @@ export default function ChatBot() {
     abortRef.current = controller;
     streamingIdRef.current = null;
     bufferRef.current = "";
+    abortedRef.current = false;
     setIsTyping(true);
     setIsStreaming(true);
 
@@ -278,31 +367,40 @@ export default function ChatBot() {
       }
 
       if (!gotAny) {
-        // Server returned nothing. Surface a helpful fallback.
+        // Either the server returned nothing, or the user stopped before
+        // anything arrived. Surface the appropriate marker.
+        const content = abortedRef.current
+          ? "_(הופסק על ידי המשתמש)_"
+          : "_(השרת החזיר תשובה ריקה)_";
         setMessages((prev) => [
           ...prev,
           {
-            id: Date.now() + Math.floor(Math.random() * 1000) + 1,
+            id: mkId(),
             sender: "bot",
-            content: "_(השרת החזיר תשובה ריקה)_",
+            content,
             timestamp: now(),
             excludeFromLlm: true,
           },
         ]);
       } else {
+        // Drain any buffered delta exactly once. cancelFlush drops the rAF so
+        // a late flush can't re-append pending after we finalize here.
         const pending = bufferRef.current;
-        bufferRef.current = "";
+        cancelFlush();
         const id = streamingIdRef.current;
+        const stoppedByUser = abortedRef.current;
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === id
-              ? {
-                  ...m,
-                  content: pending ? m.content + pending : m.content,
-                  streaming: false,
-                }
-              : m,
-          ),
+          prev.map((m) => {
+            if (m.id !== id) return m;
+            const nextContent = pending ? m.content + pending : m.content;
+            return {
+              ...m,
+              content: stoppedByUser
+                ? `${nextContent}\n\n_(הופסק על ידי המשתמש)_`
+                : nextContent,
+              streaming: false,
+            };
+          }),
         );
       }
     } catch (err) {
@@ -353,67 +451,89 @@ export default function ChatBot() {
     }
   };
 
+  const sendingRef = useRef(false);
   const handleSend = async (overrideText?: string) => {
-    if (isStreaming) return;
+    // `isStreaming` only flips true after the request is in flight, but the
+    // file-reading step before that is async — guard the whole window so a
+    // second click (chip, Enter) during file reads doesn't double-submit.
+    if (sendingRef.current || isStreaming) return;
     if (!client) return;
     const query = typeof overrideText === "string" ? overrideText : inputValue;
     const hasFiles = attachedFiles.length > 0;
     if (!query.trim() && !hasFiles) return;
 
-    const currentFiles = [...attachedFiles];
-    const userMsg: Message = {
-      id: Date.now(),
-      sender: "user",
-      content: query,
-      files: currentFiles,
-      timestamp: now(),
-    };
+    sendingRef.current = true;
+    try {
+      const currentFiles = [...attachedFiles];
+      const filesMeta: AttachedFileMeta[] = currentFiles.map((f) => ({
+        name: f.name,
+        size: f.size,
+        type: f.type,
+      }));
+      const userMsg: Message = {
+        id: mkId(),
+        sender: "user",
+        content: query,
+        files: filesMeta,
+        timestamp: now(),
+      };
 
-    // Show user message instantly.
-    const visibleHistory = [...messages, userMsg];
-    setMessages(visibleHistory);
-    setInputValue("");
-    setAttachedFiles([]);
-    if (textareaRef.current) textareaRef.current.style.height = "auto";
-    setTimeout(() => scrollToBottom(true), 50);
+      // Show user message instantly.
+      const visibleHistory = [...messages, userMsg];
+      setMessages(visibleHistory);
+      setInputValue("");
+      setAttachedFiles([]);
+      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      setTimeout(() => scrollToBottom(true), 50);
 
-    // Build LLM content (reads attached text files); may take a tick.
-    const llmContent = await buildUserContent(query, currentFiles);
-    // Persist llmContent on the user message so retries preserve file contents.
-    setMessages((prev) =>
-      prev.map((m) => (m.id === userMsg.id ? { ...m, llmContent } : m)),
-    );
-    const historyForLlm = visibleHistory.map((m) =>
-      m.id === userMsg.id ? { ...m, llmContent } : m,
-    );
+      // Build LLM content (reads attached text files); may take a tick. The
+      // File refs live only in this function scope and are released as soon
+      // as buildUserContent returns — the message itself holds only metadata.
+      const llmContent = await buildUserContent(query, currentFiles);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === userMsg.id ? { ...m, llmContent } : m)),
+      );
+      const historyForLlm = visibleHistory.map((m) =>
+        m.id === userMsg.id ? { ...m, llmContent } : m,
+      );
 
-    await runStream(historyForLlm);
+      await runStream(historyForLlm);
+    } finally {
+      sendingRef.current = false;
+    }
   };
 
-  const handleRetryFrom = (errorId: number) => {
-    const idx = messages.findIndex((m) => m.id === errorId);
+  // Stable identity so the memoized MessageItem doesn't re-render every tick.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+  const handleRetryFrom = useCallback((errorId: number) => {
+    // sendingRef is true for the full duration of handleSend + runStream, so
+    // this also blocks retry while a normal send is in flight.
+    if (sendingRef.current) return;
+    const current = messagesRef.current;
+    const idx = current.findIndex((m) => m.id === errorId);
     if (idx < 0) return;
-    // Build the history up through the user message that preceded this error.
     let userIdx = idx - 1;
-    while (userIdx >= 0 && messages[userIdx].sender !== "user") userIdx--;
+    while (userIdx >= 0 && current[userIdx].sender !== "user") userIdx--;
     if (userIdx < 0) return;
-    const historyForRetry = messages.slice(0, userIdx + 1);
-    // Remove just the error bubble; keep everything else. New response appends at the end.
-    const kept = messages.filter((m) => m.id !== errorId);
+    const historyForRetry = current.slice(0, userIdx + 1);
+    const kept = current.filter((m) => m.id !== errorId);
+    sendingRef.current = true;
     setMessages(kept);
-    setTimeout(() => void runStream(historyForRetry), 0);
-  };
-
-  // Only show retry when this error is the most recent bubble, so retrying
-  // never overwrites or confuses a later conversation turn.
-  const isLatest = (id: number) => messages[messages.length - 1]?.id === id;
+    setTimeout(() => {
+      void runStream(historyForRetry).finally(() => {
+        sendingRef.current = false;
+      });
+    }, 0);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const showConfigHintInHeader = !client;
 
   return (
     <div
       dir="rtl"
-      className="min-h-screen relative overflow-hidden font-heebo"
+      className="min-h-dvh relative overflow-hidden font-heebo"
       style={{ backgroundColor: "#eef2f7" }}
     >
       <style
@@ -432,14 +552,6 @@ export default function ChatBot() {
           backface-visibility: hidden;
           transform: translateZ(0);
         }
-
-        .spotlight-card { position: relative; }
-        .spotlight-card::before {
-          content: ""; position: absolute; inset: 0;
-          background: radial-gradient(400px circle at var(--mouse-x, 0) var(--mouse-y, 0), rgba(255,255,255,0.7), transparent 40%);
-          opacity: 0; transition: opacity 0.3s var(--ease-fluid); pointer-events: none; z-index: 2; border-radius: inherit;
-        }
-        .spotlight-card:hover::before { opacity: 1; }
 
         .premium-prose { max-width: 65ch; }
         .premium-prose:hover p, .premium-prose:hover ul, .premium-prose:hover ol, .premium-prose:hover blockquote { color: #7f90a8; text-shadow: none; transition: color 0.4s var(--ease-fluid); }
@@ -641,16 +753,14 @@ export default function ChatBot() {
       </div>
 
       <div
+        ref={spotlightRef}
         className="absolute inset-0 pointer-events-none transition-opacity duration-1000 mix-blend-overlay z-0 hw-accelerate"
-        style={{
-          background: `radial-gradient(800px circle at ${mousePos.x}px ${mousePos.y}px, rgba(255, 255, 255, 0.4), transparent 50%)`,
-        }}
       />
 
       <div className="absolute top-0 left-0 w-full h-[30vh] bg-gradient-to-b from-[#eef2f7] to-transparent z-10 pointer-events-none opacity-90 hw-accelerate" />
 
       <div
-        className="relative z-20 max-w-4xl mx-auto h-screen flex flex-col px-4 py-8"
+        className="relative z-20 max-w-4xl mx-auto h-dvh flex flex-col px-4 py-8"
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
@@ -698,94 +808,18 @@ export default function ChatBot() {
         <div
           ref={chatContainerRef}
           onScroll={handleScroll}
+          role="log"
           aria-live="polite"
-          className={`flex-1 overflow-y-auto mb-6 px-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-all duration-700 ease-in-out hw-accelerate ${isInputFocused ? "opacity-40 blur-[2px]" : "opacity-100 blur-0"}`}
+          aria-busy={isStreaming}
+          className={`flex-1 overflow-y-auto mb-6 px-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-opacity duration-500 ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
         >
-          {messages.map((msg) => (
-            <div
+          {messages.map((msg, i) => (
+            <MessageItem
               key={msg.id}
-              className={`flex w-full hw-accelerate ${msg.sender === "user" ? "justify-end user-message-enter" : "justify-start bot-message-enter"}`}
-            >
-              {msg.sender === "bot" ? (
-                <div className="flex gap-4 max-w-[85%]">
-                  <div className="w-8 h-8 rounded-full bg-white/60 border border-white/80 shadow-md flex items-center justify-center flex-shrink-0 mt-1 backdrop-blur-md">
-                    <Sparkles className="w-4 h-4 text-[#2563eb] icon-glow" />
-                  </div>
-                  <div className="space-y-3 w-full">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-[12px] font-semibold text-[#435569] text-etched">
-                        {msg.error ? "הודעת מערכת" : "מערכת פנימית"}
-                      </span>
-                      <span className="text-[10px] text-[#7f90a8] text-etched font-medium">
-                        {msg.timestamp}
-                      </span>
-                    </div>
-
-                    <div
-                      className={`glass-panel bot-bubble specular-highlight hw-accelerate rounded-[24px] rounded-tr-[8px] px-7 py-6 inline-block relative group shadow-[0_20px_40px_-12px_rgba(15,23,42,0.06)] hover:shadow-[0_24px_50px_-10px_rgba(15,23,42,0.08)] max-w-[95%] ${msg.error ? "error-bubble" : ""}`}
-                    >
-                      <div className="absolute inset-0 bg-gradient-to-b from-white/60 to-transparent pointer-events-none rounded-[24px] rounded-tr-[8px]" />
-                      <div
-                        className={`absolute right-0 top-6 bottom-6 w-[3px] rounded-l-full opacity-60 group-hover:opacity-100 transition-opacity duration-500 ${msg.error ? "bg-gradient-to-b from-red-500/60 to-red-500/10 shadow-[0_0_8px_rgba(239,68,68,0.3)]" : "bg-gradient-to-b from-[#2563eb]/60 to-[#2563eb]/10 shadow-[0_0_8px_rgba(37,99,235,0.3)]"}`}
-                      />
-                      <div className="relative z-10 pr-2">
-                        <Markdown>{msg.content || " "}</Markdown>
-                        {msg.streaming && <span className="stream-caret" />}
-                      </div>
-                    </div>
-
-                    {msg.error && isLatest(msg.id) && (
-                      <button
-                        onClick={() => handleRetryFrom(msg.id)}
-                        className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium text-[#435569] inline-flex items-center gap-2 hw-accelerate"
-                        aria-label="נסה שוב"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5 text-[#2563eb]" />
-                        נסה שוב
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="max-w-[75%] flex flex-col items-end">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className="text-[10px] text-[#7f90a8] text-etched font-medium">
-                      {msg.timestamp}
-                    </span>
-                    <span className="text-[12px] font-semibold text-[#435569] text-etched">
-                      את/ה
-                    </span>
-                  </div>
-                  <div className="flex flex-col items-end gap-2 w-full">
-                    {msg.files && msg.files.length > 0 && (
-                      <div className="flex flex-wrap gap-2 justify-end w-full">
-                        {msg.files.map((file, i) => (
-                          <div
-                            key={i}
-                            className="glass-panel px-3 py-2 rounded-xl flex items-center gap-2 text-[#0f172a] bg-white/60 backdrop-blur-xl hw-accelerate"
-                          >
-                            <FileText className="w-4 h-4 text-[#2563eb]" />
-                            <span
-                              className="text-[13px] font-medium max-w-[150px] truncate text-etched"
-                              dir="ltr"
-                            >
-                              {file.name}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {msg.content && (
-                      <div className="bg-gradient-to-br from-[#2563eb]/[0.08] to-[#2563eb]/[0.01] border border-[#2563eb]/20 rounded-[22px] rounded-tl-[6px] px-6 py-5 inline-block shadow-[inset_0_1px_2px_rgba(255,255,255,0.7),_0_8px_20px_-5px_rgba(37,99,235,0.05)] backdrop-blur-xl relative overflow-hidden specular-highlight hw-accelerate">
-                        <p className="text-ink text-[15.5px] leading-[1.65] font-medium relative z-10 whitespace-pre-wrap">
-                          {msg.content}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
+              msg={msg}
+              isLatest={i === messages.length - 1}
+              onRetry={handleRetryFrom}
+            />
           ))}
 
           {isTyping && (
@@ -965,7 +999,7 @@ export default function ChatBot() {
               >
                 <Send
                   className="w-5 h-5 -ml-1"
-                  style={{ transform: "rotate(180deg)" }}
+                  style={{ transform: "scaleX(-1)" }}
                 />
               </button>
             )}
@@ -975,6 +1009,106 @@ export default function ChatBot() {
     </div>
   );
 }
+
+type MessageItemProps = {
+  msg: Message;
+  isLatest: boolean;
+  onRetry: (id: number) => void;
+};
+
+const MessageItem = memo(function MessageItem({
+  msg,
+  isLatest,
+  onRetry,
+}: MessageItemProps) {
+  if (msg.sender === "bot") {
+    return (
+      <div className="flex w-full hw-accelerate justify-start bot-message-enter">
+        <div className="flex gap-4 max-w-[85%]">
+          <div className="w-8 h-8 rounded-full bg-white/60 border border-white/80 shadow-md flex items-center justify-center flex-shrink-0 mt-1 backdrop-blur-md">
+            <Sparkles className="w-4 h-4 text-[#2563eb] icon-glow" />
+          </div>
+          <div className="space-y-3 w-full">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-[12px] font-semibold text-[#435569] text-etched">
+                {msg.error ? "הודעת מערכת" : "מערכת פנימית"}
+              </span>
+              <span className="text-[10px] text-[#7f90a8] text-etched font-medium">
+                {msg.timestamp}
+              </span>
+            </div>
+
+            <div
+              className={`glass-panel bot-bubble specular-highlight hw-accelerate rounded-[24px] rounded-tr-[8px] px-7 py-6 inline-block relative group shadow-[0_20px_40px_-12px_rgba(15,23,42,0.06)] hover:shadow-[0_24px_50px_-10px_rgba(15,23,42,0.08)] max-w-[95%] ${msg.error ? "error-bubble" : ""}`}
+            >
+              <div className="absolute inset-0 bg-gradient-to-b from-white/60 to-transparent pointer-events-none rounded-[24px] rounded-tr-[8px]" />
+              <div
+                className={`absolute right-0 top-6 bottom-6 w-[3px] rounded-l-full opacity-60 group-hover:opacity-100 transition-opacity duration-500 ${msg.error ? "bg-gradient-to-b from-red-500/60 to-red-500/10 shadow-[0_0_8px_rgba(239,68,68,0.3)]" : "bg-gradient-to-b from-[#2563eb]/60 to-[#2563eb]/10 shadow-[0_0_8px_rgba(37,99,235,0.3)]"}`}
+              />
+              <div className="relative z-10 pr-2">
+                <Markdown>{msg.content || " "}</Markdown>
+                {msg.streaming && <span className="stream-caret" />}
+              </div>
+            </div>
+
+            {msg.error && isLatest && (
+              <button
+                onClick={() => onRetry(msg.id)}
+                className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium text-[#435569] inline-flex items-center gap-2 hw-accelerate"
+                aria-label="נסה שוב"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-[#2563eb]" />
+                נסה שוב
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex w-full hw-accelerate justify-end user-message-enter">
+      <div className="max-w-[75%] flex flex-col items-end">
+        <div className="flex items-center gap-2 mb-1">
+          <span className="text-[10px] text-[#7f90a8] text-etched font-medium">
+            {msg.timestamp}
+          </span>
+          <span className="text-[12px] font-semibold text-[#435569] text-etched">
+            את/ה
+          </span>
+        </div>
+        <div className="flex flex-col items-end gap-2 w-full">
+          {msg.files && msg.files.length > 0 && (
+            <div className="flex flex-wrap gap-2 justify-end w-full">
+              {msg.files.map((file, i) => (
+                <div
+                  key={i}
+                  className="glass-panel px-3 py-2 rounded-xl flex items-center gap-2 text-[#0f172a] bg-white/60 backdrop-blur-xl hw-accelerate"
+                >
+                  <FileText className="w-4 h-4 text-[#2563eb]" />
+                  <span
+                    className="text-[13px] font-medium max-w-[150px] truncate text-etched"
+                    dir="ltr"
+                  >
+                    {file.name}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {msg.content && (
+            <div className="bg-gradient-to-br from-[#2563eb]/[0.08] to-[#2563eb]/[0.01] border border-[#2563eb]/20 rounded-[22px] rounded-tl-[6px] px-6 py-5 inline-block shadow-[inset_0_1px_2px_rgba(255,255,255,0.7),_0_8px_20px_-5px_rgba(37,99,235,0.05)] backdrop-blur-xl relative overflow-hidden specular-highlight hw-accelerate">
+              <p className="text-ink text-[15.5px] leading-[1.65] font-medium relative z-10 whitespace-pre-wrap">
+                {msg.content}
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+});
 
 function describeError(err: LLMError): string {
   if (err.code === "http" && err.status === 401) {

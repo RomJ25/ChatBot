@@ -13,6 +13,15 @@ export default defineConfig(({ mode }) => {
           secure: false,
           rewrite: (p) => p.replace(/^\/api\/llm/, ""),
           configure: (p) => {
+            p.on("proxyReq", (proxyReq) => {
+              // Some providers (e.g. Pollinations) serve a deprecation notice
+              // instead of real output when they see a browser-origin request.
+              // Stripping these makes the relay indistinguishable from a
+              // server-to-server call, which is what most anonymous endpoints
+              // expect.
+              proxyReq.removeHeader("origin");
+              proxyReq.removeHeader("referer");
+            });
             p.on("error", (err) => {
               console.error("[llm-proxy] upstream error:", err.message);
             });

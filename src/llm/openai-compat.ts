@@ -35,10 +35,9 @@ export class OpenAICompatClient implements ChatClient {
     messages: ChatMessage[],
     { signal }: StreamOpts,
   ): AsyncIterable<string> {
-    const payload = {
+    const payload: Record<string, unknown> = {
       model: this.cfg.model,
       stream: true,
-      temperature: this.cfg.temperature,
       messages: this.cfg.systemPrompt
         ? [
             { role: "system", content: this.cfg.systemPrompt } as ChatMessage,
@@ -46,6 +45,11 @@ export class OpenAICompatClient implements ChatClient {
           ]
         : messages,
     };
+    // Only include temperature when explicitly set — some providers (Ollama,
+    // LM Studio) reject `null`/`undefined` for this field.
+    if (typeof this.cfg.temperature === "number") {
+      payload.temperature = this.cfg.temperature;
+    }
 
     let res: Response;
     try {
@@ -66,7 +70,7 @@ export class OpenAICompatClient implements ChatClient {
 
     if (!res.ok) {
       const bodyText = await res.text().catch(() => "");
-      const snippet = bodyText ? `: ${bodyText.slice(0, 300)}` : "";
+      const snippet = bodyText ? `: ${scrubSecrets(bodyText).slice(0, 300)}` : "";
       throw new LLMError(
         `HTTP ${res.status} ${res.statusText}${snippet}`,
         "http",
@@ -119,7 +123,9 @@ export class OpenAICompatClient implements ChatClient {
           if (delta) yield delta;
         }
       }
-      // Flush any trailing event without a terminator.
+      // Flush any multi-byte char that straddled the last chunk, then any
+      // trailing event without a terminator.
+      buffer += decoder.decode();
       const tail = buffer.trim();
       if (tail) {
         const delta = parseSSEEvent(tail);
@@ -131,8 +137,26 @@ export class OpenAICompatClient implements ChatClient {
         `שגיאת זרימה: ${e?.message ?? "לא ידוע"}`,
         "network",
       );
+    } finally {
+      // Release the reader so the underlying stream can be GC'd promptly,
+      // especially after an abort. cancel() is a no-op if already closed.
+      try {
+        await reader.cancel();
+      } catch {
+        /* ignore */
+      }
     }
   }
+}
+
+// Redact bearer tokens if a misbehaving server echoes the Authorization
+// header back in an error body. Defense in depth — keys should not reach
+// logs or error bubbles.
+function scrubSecrets(s: string): string {
+  return s
+    .replace(/Bearer\s+[A-Za-z0-9._\-]+/gi, "Bearer [redacted]")
+    .replace(/(authorization["'\s:]+)[^"'\n,]+/gi, "$1[redacted]")
+    .replace(/(api[-_]?key["'\s:]+)[^"'\n,]+/gi, "$1[redacted]");
 }
 
 const DONE_SENTINEL = Symbol("done") as unknown as string;
@@ -155,7 +179,10 @@ function parseSSEEvent(rawEvent: string): string | null {
   const dataLines: string[] = [];
   for (const line of rawEvent.split(/\r?\n/)) {
     if (!line.startsWith("data:")) continue;
-    const value = line.slice(5).replace(/^\s/, "");
+    // Strip the leading single space after `:` per SSE spec, then strip any
+    // stray CR if the server used `\r\n\n` separators — keeps the [DONE]
+    // sentinel matchable and JSON.parse fed clean input.
+    const value = line.slice(5).replace(/^\s/, "").replace(/\r$/, "");
     if (value === "[DONE]") return DONE_SENTINEL;
     dataLines.push(value);
   }
@@ -163,13 +190,34 @@ function parseSSEEvent(rawEvent: string): string | null {
   const payload = dataLines.join("\n");
   try {
     const parsed = JSON.parse(payload);
-    const delta =
+    const raw =
       parsed?.choices?.[0]?.delta?.content ??
       parsed?.choices?.[0]?.message?.content ??
       parsed?.choices?.[0]?.text ??
       "";
-    return typeof delta === "string" && delta.length > 0 ? delta : null;
+    const text = coerceContent(raw);
+    return text.length > 0 ? text : null;
   } catch {
     return null;
   }
+}
+
+// Accept both strings and the array form some compat endpoints emit, e.g.
+// [{type: "text", text: "..."}].
+function coerceContent(raw: unknown): string {
+  if (typeof raw === "string") return raw;
+  if (Array.isArray(raw)) {
+    let out = "";
+    for (const part of raw) {
+      if (typeof part === "string") {
+        out += part;
+      } else if (part && typeof part === "object") {
+        const p = part as { text?: unknown; content?: unknown };
+        if (typeof p.text === "string") out += p.text;
+        else if (typeof p.content === "string") out += p.content;
+      }
+    }
+    return out;
+  }
+  return "";
 }
