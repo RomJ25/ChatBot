@@ -141,14 +141,9 @@ header > div:first-child > div:first-child {
   100% { transform: scaleY(1); }
 }
 
-/* Status badge — the steady "stable" state gets a faint amber halo
-   instead of the generic green, since green is not in our palette. The
-   semantic stays "ready" via the existing label text. The dot is still
-   green at the .glass-panel layer so we override here. */
-header .glass-panel .bg-green-500 {
-  background: var(--accent-emphasis) !important;
-  box-shadow: 0 0 6px rgba(229, 164, 69, 0.7) !important;
-}
+/* Status badge — leave the stable-state green dot alone. Green for "all good"
+   is a near-universal UX convention; the amber I tried first reads as a
+   *warning* even on a frosted-blue palette. Streaming gets the persona accent. */
 header .glass-panel .bg-blue-500 {
   background: var(--accent) !important;
   box-shadow: 0 0 8px rgba(58, 109, 181, 0.7) !important;

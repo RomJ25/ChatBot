@@ -22,8 +22,9 @@ const systemPrompt = buildSystemPrompt(PERSONA, TOPICS);
 const welcome = buildWelcome(PERSONA, TOPICS);
 
 const suggestions: ChatSuggestion[] = [
-  { label: "על מה אתה יכול לענות?", prompt: "על מה אתה יכול לענות?" },
-  { label: "הסבר את אחד הנושאים", prompt: "הסבר לי על אחד הנושאים שאתה מכיר" },
+  { label: "ספר על המונה ליזה", prompt: "ספר לי על המונה ליזה" },
+  { label: "מה ההמצאות שלך?", prompt: "אילו המצאות שרטטת ולא נבנו?" },
+  { label: "למה כתב מראה?", prompt: "למה אתה כותב בכתב מראה?" },
 ];
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
@@ -34,6 +35,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       welcomeHeroUrl="/welcome-portrait.jpg"
       cadence="quill"
       dropCap
+      botName="לאונרדו"
+      thinkingText="הקולמוס מטבל בדיו…"
       systemPrompt={systemPrompt}
       welcome={welcome}
       suggestions={suggestions}

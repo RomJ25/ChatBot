@@ -27,6 +27,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
       headline={`העוזר החכם של ${TEAM.name}`}
       logoUrl="/owl-mark.svg"
       welcomeHeroUrl="/welcome-crest.jpg"
+      botName={TEAM.name}
+      thinkingText="מחפש בידע…"
       systemPrompt={systemPrompt}
       welcome={welcome}
       suggestions={suggestions}

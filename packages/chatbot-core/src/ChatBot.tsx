@@ -2,9 +2,9 @@ import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "
 import {
   ArrowDown,
   FileText,
+  MessageCircle,
   Paperclip,
   RotateCcw,
-  Search,
   Send,
   Sparkles,
   Square,
@@ -44,6 +44,16 @@ export type ChatBotProps = {
    * rendered with a floated drop-cap initial (de-vincho aesthetic).
    */
   dropCap?: boolean;
+  /**
+   * Name shown above each bot bubble (e.g. "צוות שניר" / "לאונרדו").
+   * Default: "מערכת פנימית".
+   */
+  botName?: string;
+  /**
+   * Text shown next to the three pulsing dots while waiting for the first
+   * token. Default: "המערכת חושבת...".
+   */
+  thinkingText?: string;
 };
 
 // Keep only the display-relevant fields on a message. Holding `File` refs
@@ -180,6 +190,8 @@ export default function ChatBot({
   welcome,
   suggestions,
   dropCap = false,
+  botName = "מערכת פנימית",
+  thinkingText = "המערכת חושבת...",
 }: ChatBotProps) {
   const client = useMemo(
     () => createDefaultClient(systemPrompt),
@@ -1167,17 +1179,14 @@ export default function ChatBot({
               msg={msg}
               isLatest={i === messages.length - 1}
               onRetry={handleRetryFrom}
+              botName={botName}
+              botAvatarUrl={logoUrl}
             />
           ))}
 
           {isTyping && (
             <div className="flex gap-4 max-w-[85%] bot-message-enter justify-start hw-accelerate">
-              <div className="w-8 h-8 rounded-full bg-white/60 border border-white/80 shadow-md flex items-center justify-center flex-shrink-0 mt-1 backdrop-blur-md">
-                <Sparkles
-                  className="w-4 h-4 icon-glow"
-                  style={{ color: "var(--accent)" }}
-                />
-              </div>
+              <BotAvatar logoUrl={logoUrl} />
               <div className="glass-panel bot-bubble rounded-2xl rounded-tr-sm px-5 py-4 flex items-center gap-2 hw-accelerate">
                 {[0, 150, 300].map((delay) => (
                   <div
@@ -1195,7 +1204,7 @@ export default function ChatBot({
                   className="text-[13px] font-semibold mr-3 text-etched"
                   style={{ color: "var(--accent)" }}
                 >
-                  המערכת חושבת...
+                  {thinkingText}
                 </span>
               </div>
             </div>
@@ -1278,7 +1287,7 @@ export default function ChatBot({
                   className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium flex items-center gap-2 tracking-tight hw-accelerate disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{ color: "var(--ink-soft)" }}
                 >
-                  <Search
+                  <MessageCircle
                     className="w-3.5 h-3.5 icon-glow"
                     style={{ color: "var(--accent)", opacity: 0.8 }}
                   />
@@ -1413,30 +1422,52 @@ type MessageItemProps = {
   msg: Message;
   isLatest: boolean;
   onRetry: (id: number) => void;
+  botName: string;
+  botAvatarUrl?: string;
 };
+
+// Shared bubble-side avatar — renders the persona logo when one is supplied,
+// falling back to the lucide Sparkles icon. Kept outside MessageItem so the
+// typing-indicator can reuse it without duplicating the styling.
+function BotAvatar({ logoUrl }: { logoUrl?: string }) {
+  return (
+    <div className="bot-avatar w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 overflow-hidden">
+      {logoUrl ? (
+        <img
+          src={logoUrl}
+          alt=""
+          className="w-full h-full object-contain p-0.5"
+          style={{ color: "var(--accent)" }}
+        />
+      ) : (
+        <Sparkles
+          className="w-4 h-4 icon-glow"
+          style={{ color: "var(--accent)" }}
+        />
+      )}
+    </div>
+  );
+}
 
 const MessageItem = memo(function MessageItem({
   msg,
   isLatest,
   onRetry,
+  botName,
+  botAvatarUrl,
 }: MessageItemProps) {
   if (msg.sender === "bot") {
     return (
       <div className="flex w-full hw-accelerate justify-start bot-message-enter">
         <div className="flex gap-4 max-w-[85%]">
-          <div className="bot-avatar w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
-            <Sparkles
-              className="w-4 h-4 icon-glow"
-              style={{ color: "var(--accent)" }}
-            />
-          </div>
+          <BotAvatar logoUrl={botAvatarUrl} />
           <div className="space-y-3 w-full">
             <div className="flex items-center gap-2 mb-1">
               <span
                 className="text-[12px] font-semibold text-etched"
                 style={{ color: "var(--ink-soft)" }}
               >
-                {msg.error ? "הודעת מערכת" : "מערכת פנימית"}
+                {msg.error ? "הודעת מערכת" : botName}
               </span>
               <span
                 className="text-[10px] text-etched font-medium"
