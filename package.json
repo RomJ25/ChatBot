@@ -16,6 +16,7 @@
     "preview:sniro": "pnpm -F sniro preview",
     "preview:de-vincho": "pnpm -F de-vincho preview",
     "typecheck": "pnpm -r typecheck",
+    "bootstrap": "node scripts/setup.mjs",
     "extract": "node scripts/extract.mjs",
     "bundle:sniro": "bun scripts/bundle.ts sniro",
     "bundle:de-vincho": "bun scripts/bundle.ts de-vincho",

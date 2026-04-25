@@ -15,29 +15,40 @@ pnpm monorepo that ships two Hebrew-RTL chatbots sharing one UI + one streaming 
 
 The app has no native dependencies — `pnpm install` is pure JS/TS.
 
-## Quickstart
+## Quickstart (any OS)
 
 ```bash
+corepack enable          # one-time, gives you the right pnpm version
 pnpm install
-cp .env.example apps/sniro/.env.local       # pick one preset, fill creds
-cp .env.example apps/de-vincho/.env.local   # same
-pnpm dev:sniro        # http://localhost:5173
-pnpm dev:de-vincho    # http://localhost:5174
+pnpm bootstrap           # creates apps/<slug>/.env.local from .env.example
+pnpm dev:sniro           # opens http://localhost:5173
+pnpm dev:de-vincho       # opens http://localhost:5174
 ```
 
-On Windows PowerShell, replace the `cp` lines with:
+That's it — `pnpm bootstrap` is idempotent (won't clobber an existing `.env.local`) and prints the exact next steps. With no API key in `.env.local` the app still loads and shows a "configuration required" state instead of crashing, so you can verify the UI before wiring up an LLM.
 
-```powershell
-Copy-Item .env.example apps\sniro\.env.local
-Copy-Item .env.example apps\de-vincho\.env.local
-```
+### Picking a model provider
 
-If no LLM is configured, the app still loads and shows a config-hint bubble — it won't crash.
+Open `apps/sniro/.env.local` (and the de-vincho one) and uncomment one preset:
+
+| You want | Block to uncomment |
+| --- | --- |
+| OpenAI / Groq / Anthropic / OpenRouter (cloud) | `# ---- <provider> ----` |
+| Ollama or LM Studio (offline, local) | `# ---- Ollama ----` / `# ---- LM Studio ----` |
+| Pollinations (anonymous, instant test) | `# ---- Pollinations ----` |
+| Internal / on-prem LiteLLM gateway | `# ---- Internal / air-gapped endpoint ----` |
+
+The "internal" preset routes through the Vite dev/preview proxy (`/api/llm/*`) so the browser never sees the upstream URL and CORS can't bite you.
+
+### Standalone `.exe` (Windows, no install needed)
+
+`out/<slug>.exe` is a single-file Windows binary. **Double-click it** — it picks a free port, opens your browser, and shows a Hebrew-RTL setup form. Pick a preset, paste your key, click **שמור והתחל**, and it's ready. The launcher writes a `<slug>.env` next to itself, so re-launching skips the form. The API key is stored locally and injected server-side; the browser bundle never sees it. See `doc/standalone-binary.md` for offline-only deployment with Ollama / LM Studio.
 
 ## Workspace scripts
 
 | Command | What it does |
 | --- | --- |
+| `pnpm bootstrap` | one-time first-run — creates `apps/<slug>/.env.local` from `.env.example` (idempotent) |
 | `pnpm dev:<slug>` | Vite dev server (HMR) for sniro or de-vincho |
 | `pnpm build:<slug>` | typecheck + build to `apps/<slug>/dist/` |
 | `pnpm preview:<slug>` | serve the built dist locally |
