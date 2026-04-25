@@ -1,0 +1,11 @@
+/*
+ * Product-specific theme overrides for sniro.
+ * Core's index.css defines the design tokens — override them here if you want
+ * a different accent color, background gradient, etc.
+ *
+ * Example:
+ *   :root {
+ *     --accent: #2563eb;
+ *     --surface: #eef2f7;
+ *   }
+ */

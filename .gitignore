@@ -7,3 +7,14 @@ dist
 .env.*.local
 *.tsbuildinfo
 .playwright-mcp
+
+# Local dev screenshots
+/*.png
+
+# Standalone-binary launcher artifacts (scripts/bundle.ts)
+/out/
+/scripts/launcher/embedded.sniro.ts
+/scripts/launcher/embedded.de-vincho.ts
+/scripts/launcher/embedded.*.assets/
+# Launcher env files created next to binaries during local testing
+*.env

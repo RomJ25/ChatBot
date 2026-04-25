@@ -1,31 +1,23 @@
 {
-  "name": "sniro",
+  "name": "sniro-workspace",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.0",
   "type": "module",
+  "packageManager": "pnpm@10.14.0",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit"
-  },
-  "dependencies": {
-    "@fontsource/heebo": "^5.2.8",
-    "lucide-react": "^0.468.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
-  },
-  "devDependencies": {
-    "@types/node": "^25.6.0",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "@vitejs/plugin-react": "^4.3.4",
-    "autoprefixer": "^10.4.20",
-    "postcss": "^8.4.49",
-    "tailwindcss": "^3.4.17",
-    "typescript": "^5.6.3",
-    "vite": "^5.4.11"
+    "dev:sniro": "pnpm -F sniro dev",
+    "dev:de-vincho": "pnpm -F de-vincho dev",
+    "build:sniro": "pnpm -F sniro build",
+    "build:de-vincho": "pnpm -F de-vincho build",
+    "preview:sniro": "pnpm -F sniro preview",
+    "preview:de-vincho": "pnpm -F de-vincho preview",
+    "typecheck": "pnpm -r typecheck",
+    "extract": "node scripts/extract.mjs",
+    "bundle:sniro": "bun scripts/bundle.ts sniro",
+    "bundle:de-vincho": "bun scripts/bundle.ts de-vincho",
+    "bundle:all": "pnpm bundle:sniro && pnpm bundle:de-vincho",
+    "prompt:sniro": "bun scripts/prompt-preview.ts sniro",
+    "prompt:de-vincho": "bun scripts/prompt-preview.ts de-vincho",
+    "doctor": "bun scripts/doctor.ts"
   }
 }
