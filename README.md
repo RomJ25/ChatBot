@@ -6,6 +6,15 @@ pnpm monorepo that ships two Hebrew-RTL chatbots sharing one UI + one streaming 
 - **de-vincho** (`apps/de-vincho`) — information chat scaffold. Content = persona + topics. Port 5174.
 - **chatbot-core** (`packages/chatbot-core`) — shared React+Vite+TS component library: `ChatBot.tsx`, OpenAI-compatible SSE client, Markdown renderer, prompt helpers.
 
+## Prerequisites
+
+- **Node.js 20.10+** (22 LTS recommended; pinned in `.nvmrc`)
+- **pnpm 10+** — easiest path: `corepack enable` (Node ships with corepack; this auto-resolves the `packageManager` field in `package.json`). Alternatively `npm install -g pnpm`.
+- **bun 1.1+** — *only* needed for `pnpm doctor`, `pnpm prompt:<slug>`, and `pnpm bundle:<slug>`. The dev / build / preview workflow does not need bun.
+- **Git 2.30+**
+
+The app has no native dependencies — `pnpm install` is pure JS/TS.
+
 ## Quickstart
 
 ```bash

@@ -4,6 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "packageManager": "pnpm@10.14.0",
+  "engines": {
+    "node": ">=20.10.0",
+    "pnpm": ">=10"
+  },
   "scripts": {
     "dev:sniro": "pnpm -F sniro dev",
     "dev:de-vincho": "pnpm -F de-vincho dev",
