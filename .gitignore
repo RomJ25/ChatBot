@@ -15,6 +15,7 @@ dist
 /out/
 /scripts/launcher/embedded.sniro.ts
 /scripts/launcher/embedded.de-vincho.ts
+/scripts/launcher/embedded.active.ts
 /scripts/launcher/embedded.*.assets/
 # Launcher env files created next to binaries during local testing
 *.env
