@@ -163,6 +163,16 @@ function longestBacktickFence(content: string): string {
 let nextMessageId = 2;
 const mkId = () => ++nextMessageId;
 
+// Strip Unicode bidirectional control characters from user input before it
+// reaches the LLM. These characters (U+202A–U+202E, U+2066–U+2069) are
+// invisible but tokenize, and pasted-in payloads can use them to confuse
+// instruction parsing or smuggle prompt injections that read benign in the UI
+// but malicious to the model. See: Trojan Source (CVE-2021-42574),
+// multilingual jailbreak research 2024–2025.
+const BIDI_CONTROLS_RE = /[\u202A-\u202E\u2066-\u2069]/g;
+const stripBidiControls = (s: string): string =>
+  s.replace(BIDI_CONTROLS_RE, "");
+
 // Tracks the user's motion preference. Animations and the quill cadence
 // downgrade to instant when this returns true.
 function usePrefersReducedMotion(): boolean {
@@ -625,7 +635,9 @@ export default function ChatBot({
     // second click (chip, Enter) during file reads doesn't double-submit.
     if (sendingRef.current || isStreaming) return;
     if (!client) return;
-    const query = typeof overrideText === "string" ? overrideText : inputValue;
+    const rawQuery =
+      typeof overrideText === "string" ? overrideText : inputValue;
+    const query = stripBidiControls(rawQuery);
     const hasFiles = attachedFiles.length > 0;
     if (!query.trim() && !hasFiles) return;
 
