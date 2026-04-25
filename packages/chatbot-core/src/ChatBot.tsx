@@ -84,15 +84,13 @@ type Message = {
 
 const NOT_CONFIGURED_CONTENT = `⚙️ **לא הוגדרו פרטי ה-LLM.**
 
-צור קובץ \`.env.local\` עם הערכים:
+הצעדים מהמסך הזה לעבודה:
 
-\`\`\`
-VITE_LLM_BASE_URL=...
-VITE_LLM_API_KEY=...
-VITE_LLM_MODEL=...
-\`\`\`
+1. הרץ פעם אחת \`pnpm bootstrap\` — זה יוצר קובץ \`.env.local\` בכל אחת מהאפליקציות מתוך \`.env.example\`.
+2. פתח \`apps/sniro/.env.local\` (או \`apps/de-vincho/.env.local\`) ו**הסר את ה-#** מאחת מקבוצות ההגדרה (OpenAI / Groq / Ollama / LM Studio / Anthropic / Pollinations / נקודת קצה פנימית), והשלם את מפתח ה-API.
+3. הפעל מחדש: \`pnpm dev:sniro\` או \`pnpm dev:de-vincho\`.
 
-הקובץ \`.env.example\` כולל מספר הגדרות מוכנות לשימוש (OpenAI, Groq, Ollama, LM Studio, Anthropic ונקודת קצה פנימית). לאחר מכן הפעל מחדש את \`npm run dev\`.`;
+אם אתה משתמש ב־\`.exe\` עצמאי (Windows): פתח אותו בדאבל-קליק, מלא את טופס ההגדרה בעברית, לחץ **שמור והתחל**, ומוכן.`;
 
 const ABORT_BEFORE_STREAM =
   "_עצרת את התשובה לפני שהתחילה. אפשר לשאול שוב בכל רגע._";
