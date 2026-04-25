@@ -8,7 +8,9 @@ import type { Topic } from "./topics";
  * subjects.
  */
 export function buildSystemPrompt(persona: Persona, topics: Topic[]): string {
-  const topicsBlock = topics.length
+  const hasTopics = topics.length > 0;
+
+  const topicsBlock = hasTopics
     ? `## נושאי הידע
 ${topics.map(topicLine).join("\n")}`
     : "";
@@ -20,10 +22,22 @@ ${topics.map(topicLine).join("\n")}`
 
   const deepBlock = detailsBlock ? `## פירוט נושאים\n${detailsBlock}` : "";
 
+  // When the team hasn't populated topics yet, the persona stays useful by
+  // explaining concepts the model already knows, but always tells the user
+  // that team-specific answers should come from Confluence. This is the
+  // "ready out-of-the-box but honest about coverage" mode.
+  const groundingRules = hasTopics
+    ? `- ענה אך ורק על בסיס המידע שמופיע למעלה. אל תמציא פרטים, שמות, נתונים או נהלים פנימיים.
+- כשנושא לא מופיע למעלה — אמור "אין לי מידע על כך בבסיס הידע" והפנה את המשתמש ל-Confluence הפנימי או למקור מוסמך אחר.`
+    : `- בסיס הידע של הצוות עוד לא מולא — אין לך תיעוד פנימי לעבוד איתו.
+- אם השאלה היא על מושג כללי בעולם הטכנו (הגדרה, תהליך מקובל, רעיון תיאורטי): הסבר אותו ברור ומדויק ממה שאתה כבר יודע, אבל ציין מפורשות שזו תשובה כללית ולא ידע ספציפי לצוות.
+- אם השאלה דורשת ידע פנימי (נהלים, החלטות, ארכיטקטורה של הצוות): אמור "התשובה הספציפית-לצוות צריכה לבוא מ-Confluence" והצע למשתמש לחפש שם.
+- לעולם אל תמציא נהלים, שמות פנימיים, החלטות, או נתונים שלא יודעים בוודאות.`;
+
   const prompt = `אתה ${persona.selfRef}.
 ${persona.short}
 
-תפקידך לענות על שאלות בנושאים שמפורטים למטה. ענה רק על בסיס המידע שכאן.
+תפקידך להבהיר מושגים, רעיונות ותהליכים מעולם הטכנו של הצוות.
 
 ## טון
 ${persona.tone}
@@ -32,14 +46,14 @@ ${topicsBlock}
 
 ${deepBlock}
 
-## כללים
-- ענה אך ורק על בסיס המידע שמופיע למעלה. אל תמציא פרטים, שמות או עובדות.
-- כשנושא לא מופיע למעלה — אמור "אין לי מידע על כך" והצע למשתמש לבדוק במקור מוסמך.
-- תשובות קצרות וממוקדות. הימנע מהקדמות מיותרות.
+## כללי גרונדינג
+${groundingRules}
+- תשובות קצרות וממוקדות. הימנע מהקדמות מיותרות, מסיכומים מיותרים ומהתנצלויות.
 
 ## פורמט
-- **כותרות של נושאים** ב־bold; הסברים — טקסט רגיל.
-- רשימות עם תבליטים (\`- \`) כשמופיעים כמה פריטים.
+- **מושג מרכזי** ב־bold; הסבר — טקסט רגיל.
+- רשימות עם תבליטים (\`- \`) כשיש כמה פריטים.
+- בלוקי קוד עם שלושה backticks כשהתשובה כוללת תחביר/פקודה.
 - ללא אימוג'ים, ללא קישוטים.`;
 
   return prompt.replace(/\n{3,}/g, "\n\n").trim();

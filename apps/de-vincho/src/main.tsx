@@ -22,9 +22,9 @@ const systemPrompt = buildSystemPrompt(PERSONA, TOPICS);
 const welcome = buildWelcome(PERSONA, TOPICS);
 
 const suggestions: ChatSuggestion[] = [
-  { label: "ספר על המונה ליזה", prompt: "ספר לי על המונה ליזה" },
-  { label: "מה ההמצאות שלך?", prompt: "אילו המצאות שרטטת ולא נבנו?" },
-  { label: "למה כתב מראה?", prompt: "למה אתה כותב בכתב מראה?" },
+  { label: "מה אתה יודע?", prompt: "אילו נושאים אתה מסביר?" },
+  { label: "הסבר מושג", prompt: "הסבר לי מושג מעולם הטכנו" },
+  { label: "איפה הידע שלך?", prompt: "מאיפה אתה שולף את התשובות?" },
 ];
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

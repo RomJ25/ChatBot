@@ -104,9 +104,9 @@ async function checkDeVincho(): Promise<void> {
   }
   if (!TOPICS.length) {
     push(
-      "warn",
+      "info",
       slug,
-      "TOPICS is empty — chatbot will refuse every content question until you add at least one topic",
+      "TOPICS is empty — bot will answer general concept questions and defer team-specific ones to Confluence. Fill in topics from your knowledge base for grounded answers.",
     );
   }
 
