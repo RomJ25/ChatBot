@@ -16,6 +16,13 @@ pnpm dev:sniro        # http://localhost:5173
 pnpm dev:de-vincho    # http://localhost:5174
 ```
 
+On Windows PowerShell, replace the `cp` lines with:
+
+```powershell
+Copy-Item .env.example apps\sniro\.env.local
+Copy-Item .env.example apps\de-vincho\.env.local
+```
+
 If no LLM is configured, the app still loads and shows a config-hint bubble — it won't crash.
 
 ## Workspace scripts

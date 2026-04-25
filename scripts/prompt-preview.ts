@@ -10,6 +10,7 @@
 // the prompt is visible.
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const VALID = new Set(["sniro", "de-vincho"]);
 const slug = process.argv[2];
@@ -21,6 +22,10 @@ if (!slug || !VALID.has(slug)) {
 const repoRoot = path.resolve(import.meta.dir, "..");
 const base = path.join(repoRoot, "apps", slug, "src", "content");
 
+// On Windows, ESM dynamic import() rejects absolute paths like
+// "C:\\foo\\bar.ts" — they must be wrapped as file:// URLs first.
+const importPath = (p: string) => pathToFileURL(p).href;
+
 // Rough token estimate: OpenAI's tiktoken rule of thumb is ~4 chars/token for
 // English, ~2 for Hebrew (shorter subwords). We don't need exactness — just a
 // signal that prompt size is healthy.
@@ -31,18 +36,18 @@ let welcome = "";
 
 if (slug === "sniro") {
   const { buildSystemPrompt, buildWelcome } = await import(
-    path.join(base, "systemPrompt.ts")
+    importPath(path.join(base, "systemPrompt.ts"))
   );
-  const { TEAM } = await import(path.join(base, "team.ts"));
-  const { KNOWLEDGE } = await import(path.join(base, "knowledge.ts"));
+  const { TEAM } = await import(importPath(path.join(base, "team.ts")));
+  const { KNOWLEDGE } = await import(importPath(path.join(base, "knowledge.ts")));
   systemPrompt = buildSystemPrompt(TEAM, KNOWLEDGE);
   welcome = buildWelcome(TEAM);
 } else {
   const { buildSystemPrompt, buildWelcome } = await import(
-    path.join(base, "systemPrompt.ts")
+    importPath(path.join(base, "systemPrompt.ts"))
   );
-  const { PERSONA } = await import(path.join(base, "persona.ts"));
-  const { TOPICS } = await import(path.join(base, "topics.ts"));
+  const { PERSONA } = await import(importPath(path.join(base, "persona.ts")));
+  const { TOPICS } = await import(importPath(path.join(base, "topics.ts")));
   systemPrompt = buildSystemPrompt(PERSONA, TOPICS);
   welcome = buildWelcome(PERSONA, TOPICS);
 }

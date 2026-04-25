@@ -1,0 +1,18 @@
+# Enforce LF on text files so a Windows checkout with autocrlf=true doesn't
+# rewrite source files to CRLF on commit (which mangles diffs and can break
+# scripts that match exact byte sequences).
+* text=auto eol=lf
+
+# Treat the asset bundle as binary so Git never tries to detect text/encoding
+# heuristics on these files.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.exe binary

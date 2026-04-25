@@ -7,6 +7,7 @@
 //   bun scripts/doctor.ts sniro         — single app
 
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 type Finding = { level: "error" | "warn" | "info"; slug: string; msg: string };
 
@@ -17,12 +18,16 @@ const push = (level: Finding["level"], slug: string, msg: string) =>
 const repoRoot = path.resolve(import.meta.dir, "..");
 const base = (slug: string) => path.join(repoRoot, "apps", slug, "src", "content");
 
+// On Windows, ESM dynamic import() rejects absolute paths like
+// "C:\\foo\\bar.ts" — they must be wrapped as file:// URLs first.
+const importPath = (p: string) => pathToFileURL(p).href;
+
 const want = process.argv[2];
 
 async function checkSniro(): Promise<void> {
   const slug = "sniro";
-  const { TEAM } = await import(path.join(base(slug), "team.ts"));
-  const { KNOWLEDGE } = await import(path.join(base(slug), "knowledge.ts"));
+  const { TEAM } = await import(importPath(path.join(base(slug), "team.ts")));
+  const { KNOWLEDGE } = await import(importPath(path.join(base(slug), "knowledge.ts")));
 
   if (!TEAM.name?.trim()) push("error", slug, "TEAM.name is empty");
   if (!TEAM.short?.trim()) push("warn", slug, "TEAM.short is empty (used in welcome)");
@@ -85,8 +90,8 @@ async function checkSniro(): Promise<void> {
 
 async function checkDeVincho(): Promise<void> {
   const slug = "de-vincho";
-  const { PERSONA } = await import(path.join(base(slug), "persona.ts"));
-  const { TOPICS } = await import(path.join(base(slug), "topics.ts"));
+  const { PERSONA } = await import(importPath(path.join(base(slug), "persona.ts")));
+  const { TOPICS } = await import(importPath(path.join(base(slug), "topics.ts")));
 
   // The scaffolded persona still literally says "placeholder"; this is the
   // main thing a team picking up the scaffold needs to fix first.

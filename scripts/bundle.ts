@@ -45,6 +45,10 @@ console.log(`[bundle] slug=${slug}`);
 
 // 1. Vite build
 console.log(`[bundle] pnpm -F ${slug} build`);
+// shell: true so Windows can resolve pnpm.cmd / bun.exe via PATH the same
+// way macOS / Linux find pnpm and bun. Without it, spawnSync only matches
+// bare executables on Windows and fails on .cmd shims.
+const useShell = process.platform === "win32";
 const buildRes = spawnSync("pnpm", ["-F", slug, "build"], {
   cwd: repoRoot,
   env: {
@@ -54,6 +58,7 @@ const buildRes = spawnSync("pnpm", ["-F", slug, "build"], {
     VITE_LLM_API_KEY: "",
   },
   stdio: "inherit",
+  shell: useShell,
 });
 if (buildRes.status !== 0) die(`pnpm build failed with status ${buildRes.status}`);
 if (!fs.existsSync(appDist)) die(`expected ${appDist} to exist after build`);
@@ -145,7 +150,7 @@ const compileRes = spawnSync(
     exePath,
     "scripts/launcher.ts",
   ],
-  { cwd: repoRoot, stdio: "inherit" },
+  { cwd: repoRoot, stdio: "inherit", shell: useShell },
 );
 if (compileRes.status !== 0) die(`bun build --compile failed (${compileRes.status})`);
 
