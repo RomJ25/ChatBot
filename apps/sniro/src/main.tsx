@@ -25,6 +25,8 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <ChatBot
       headline={`העוזר החכם של ${TEAM.name}`}
+      logoUrl="/owl-mark.svg"
+      welcomeHeroUrl="/welcome-crest.jpg"
       systemPrompt={systemPrompt}
       welcome={welcome}
       suggestions={suggestions}

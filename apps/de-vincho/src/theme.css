@@ -1,11 +1,267 @@
 /*
- * Product-specific theme overrides for sniro.
- * Core's index.css defines the design tokens — override them here if you want
- * a different accent color, background gradient, etc.
+ * De-Vincho skin — aged ivory, iron-gall ink, copper accent, rubrication red,
+ * lapis blue used sparingly, gold leaf for hover. Cormorant Garamond italic
+ * in chrome; Frank Ruehl Libre for the Hebrew body so the period pairing
+ * holds across scripts.
  *
- * Example:
- *   :root {
- *     --accent: #2563eb;
- *     --surface: #eef2f7;
- *   }
+ * Design moves:
+ *   - candlelight flicker on body (~12s, ±2% brightness)
+ *   - manuscript right-margin rule on the chat shell (RTL: leading edge)
+ *   - drop cap on the welcome bubble
+ *   - copper monogram in header chrome; portrait reserved for welcome hero
+ *   - quill-tip caret content (set via --caret-content base64 SVG)
  */
+
+:root {
+  /* Ground — aged ivory, lifted vellum */
+  --bg: #f4ead2;
+  --bg-elev: #efe1c0;
+  --surface: rgba(255, 250, 235, 0.94);
+  --surface-soft: rgba(248, 235, 200, 0.78);
+  --ink: #3a2818;            /* iron-gall walnut */
+  --ink-soft: #5b3f28;
+  --muted: #8b6e4a;
+  --ink-rgb: 58, 40, 24;
+  --muted-rgb: 139, 110, 74;
+
+  /* Accent system — copper for chrome, rubrication for emphasis,
+     lapis for links (unused yet), gold for hover */
+  --accent: #b56b3a;            /* copper */
+  --accent-soft: #d49265;
+  --accent-strong: #8c4a1e;
+  --accent-emphasis: #a83624;   /* rubrication red */
+  --accent-precious: #c9a55a;   /* gold leaf */
+  --accent-rgb: 181, 107, 58;
+  --accent-soft-rgb: 212, 146, 101;
+
+  /* Bubbles — warm vellum surfaces with a copper inset glow */
+  --bubble-bot-bg: linear-gradient(
+    135deg,
+    rgba(255, 250, 235, 0.96) 0%,
+    rgba(245, 230, 205, 0.85) 100%
+  );
+  --bubble-bot-shadow:
+    0 16px 40px -8px rgba(58, 40, 24, 0.10),
+    inset 0 1px 1px rgba(255, 250, 235, 1),
+    inset 1px 0 24px rgba(181, 107, 58, 0.06);
+  --bubble-user-bg: linear-gradient(135deg, rgba(181, 107, 58, 0.10), rgba(181, 107, 58, 0.02));
+  --bubble-user-border: rgba(181, 107, 58, 0.22);
+
+  /* Glass-panel — warm parchment surface, less cool-glass than default */
+  --panel-bg: linear-gradient(
+    135deg,
+    rgba(255, 250, 235, 0.94) 0%,
+    rgba(245, 232, 210, 0.78) 100%
+  );
+  --panel-border: rgba(181, 107, 58, 0.22);
+  --panel-shadow:
+    0 16px 40px -8px rgba(58, 40, 24, 0.10),
+    inset 0 1px 1px rgba(255, 250, 235, 1),
+    inset 0 -1px 2px rgba(181, 107, 58, 0.05);
+  --panel-shadow-hover:
+    0 24px 60px -12px rgba(181, 107, 58, 0.18),
+    inset 0 2px 3px rgba(255, 250, 235, 1),
+    inset 0 -1px 2px rgba(181, 107, 58, 0.08);
+
+  /* Type — Cormorant Garamond italic for headline, Frank Ruehl Libre for body.
+     Hebrew gets a real old-style serif, not the sans-serif Heebo. */
+  --font-display: "Cormorant Garamond", "EB Garamond", Georgia, serif;
+  --font-body: "Frank Ruhl Libre", "Heebo", "EB Garamond", Georgia, serif;
+  --display-tracking: 0.005em;
+  --display-style: italic;
+  --display-weight: 600;
+
+  /* Caret — quill-tip glyph, ink color. Inline SVG via data URI. */
+  --caret-color: var(--ink);
+  --caret-glow: 0 0 6px rgba(58, 40, 24, 0.45);
+  --caret-content: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%233a2818'><path d='M2 22 L9 15 L14 14 L22 4 L20 2 L10 10 L9 15'/></svg>");
+
+  /* Send button — copper warmth */
+  --send-btn-bg: linear-gradient(135deg, #d49265 0%, #b56b3a 100%);
+  --send-btn-shadow-active:
+    0 10px 30px -5px rgba(181, 107, 58, 0.50),
+    inset 0 1px 2px rgba(255, 250, 235, 0.55);
+
+  /* Pattern — vellum vertical fiber + soft top vignette */
+  --pattern-bg:
+    repeating-linear-gradient(
+      90deg,
+      rgba(58, 40, 24, 0.022) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(
+      120% 80% at 50% 0%,
+      rgba(58, 40, 24, 0.05),
+      transparent 70%
+    );
+
+  /* Manuscript margin rule — runs down the leading edge of the chat shell.
+     Logical inset-inline-end in the rule selector flips it to the left in
+     RTL, which is correct for Hebrew column rulings. */
+  --pattern-margin-rule: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(181, 107, 58, 0.32) 12%,
+    rgba(181, 107, 58, 0.32) 88%,
+    transparent
+  );
+
+  /* Welcome hero — square portrait, framed circle. The portrait source is
+     a 4:5 engraving; aspect:1 + cover + top-biased position keeps the face
+     in the visible disc instead of the chest. */
+  --welcome-hero-shape: 50%;
+  --welcome-hero-aspect: 1;
+  --welcome-hero-fit: cover;
+  --welcome-hero-position: 50% 22%;
+  --welcome-hero-width: 220px;
+  --welcome-hero-bg: #5a4030;
+  --welcome-hero-frame:
+    0 0 0 1px rgba(181, 107, 58, 0.30),
+    0 0 0 5px rgba(255, 250, 235, 0.85),
+    0 0 0 6px rgba(181, 107, 58, 0.35),
+    0 18px 40px -8px rgba(58, 40, 24, 0.30);
+
+  /* Aurora — warm tone layers on parchment */
+  --aurora-1: rgba(181, 107, 58, 0.06);
+  --aurora-2: rgba(201, 165, 90, 0.04);
+  --aurora-3: rgba(255, 250, 235, 0.45);
+
+  /* Ambient — slow candlelight flicker. The keyframe is in core's index.css. */
+  --ambient-flicker: candleflicker 12s ease-in-out infinite;
+}
+
+/* Manuscript margin rule positioning — sits inside the chat-shell. The
+   ::before is already declared in core CSS; we just enable it via the
+   --pattern-margin-rule token above. */
+
+/* Override the status badge dots — green/blue dots from Tailwind clash
+   with parchment. Use rubrication red, copper, gold instead. */
+header .glass-panel .bg-amber-400 {
+  background: var(--accent-precious) !important;
+  box-shadow: 0 0 6px rgba(201, 165, 90, 0.7) !important;
+}
+header .glass-panel .bg-blue-500 {
+  background: var(--accent-emphasis) !important;
+  box-shadow: 0 0 6px rgba(168, 54, 36, 0.7) !important;
+}
+header .glass-panel .bg-green-500 {
+  background: var(--accent) !important;
+  box-shadow: 0 0 6px rgba(181, 107, 58, 0.55) !important;
+}
+
+/* Ink-blot — a single radial dot that blooms after committed punctuation
+   during the quill cadence. Class is added by Phase 4 in ChatBot.tsx. */
+.ink-blot {
+  display: inline-block;
+  width: 0.32em;
+  height: 0.32em;
+  margin-inline-start: 0.04em;
+  margin-inline-end: -0.16em;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 35%,
+    rgba(58, 40, 24, 0.85),
+    rgba(58, 40, 24, 0) 70%
+  );
+  vertical-align: middle;
+  opacity: 0;
+  transform: scale(0.4);
+  animation: inkBlotBloom 0.36s var(--ease-out-quick) forwards;
+}
+
+@keyframes inkBlotBloom {
+  0% { opacity: 0; transform: scale(0.2); }
+  60% { opacity: 0.9; transform: scale(1.1); }
+  100% { opacity: 0.55; transform: scale(1); }
+}
+
+/* Quill caret — a small SVG that trails after the last committed char.
+   The caret base style is in core; here we add the descend-from-above
+   signature for the very first stream and a lift-off when stream ends. */
+.stream-caret {
+  background: transparent !important;
+  width: 14px;
+  height: 1.05em;
+  box-shadow: none !important;
+  position: relative;
+  vertical-align: -0.2em;
+  animation: none !important;
+}
+.stream-caret::after {
+  content: var(--caret-content);
+  position: absolute;
+  inset-inline-end: 0;
+  top: -0.2em;
+  width: 14px;
+  height: 14px;
+  display: block;
+  filter: drop-shadow(0 0 4px rgba(58, 40, 24, 0.35));
+}
+
+/* LTR: caret to the right of last char. RTL: caret to the left, mirrored.
+   The quill descends-from-above on first paint (one-shot), then bobs gently. */
+.stream-caret::after {
+  transform: translate(50%, 0) rotate(-12deg);
+  animation: quillDescend 320ms var(--ease-out-quick) 1 both,
+             quillBob 1.6s ease-in-out 320ms infinite;
+}
+
+@keyframes quillDescend {
+  0% { transform: translate(50%, -22px) rotate(-25deg); opacity: 0; }
+  60% { opacity: 1; }
+  100% { transform: translate(50%, 0) rotate(-12deg); opacity: 1; }
+}
+@keyframes quillBob {
+  0%, 100% { transform: translate(50%, 0) rotate(-12deg); }
+  50% { transform: translate(50%, -1px) rotate(-15deg); }
+}
+
+[dir="rtl"] .stream-caret::after {
+  transform: translate(-50%, 0) scaleX(-1) rotate(-12deg);
+  animation: quillDescendRtl 320ms var(--ease-out-quick) 1 both,
+             quillBobRtl 1.6s ease-in-out 320ms infinite;
+}
+
+@keyframes quillDescendRtl {
+  0% { transform: translate(-50%, -22px) scaleX(-1) rotate(-25deg); opacity: 0; }
+  60% { opacity: 1; }
+  100% { transform: translate(-50%, 0) scaleX(-1) rotate(-12deg); opacity: 1; }
+}
+@keyframes quillBobRtl {
+  0%, 100% { transform: translate(-50%, 0) scaleX(-1) rotate(-12deg); }
+  50% { transform: translate(-50%, -1px) scaleX(-1) rotate(-15deg); }
+}
+
+/* Header shimmer (de-vincho variant): a subtle warm gold sweep when streaming.
+   Activates only when the header has data-streaming="true" set. */
+header[data-streaming="true"]::before {
+  content: "";
+  position: absolute;
+  inset: -8px -16px;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(201, 165, 90, 0.30) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: goldFlourish 4.2s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+  mix-blend-mode: multiply;
+  border-radius: 24px;
+}
+header { position: relative; }
+header > * { position: relative; z-index: 1; }
+
+@keyframes goldFlourish {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body { animation: none !important; }
+  header[data-streaming="true"]::before { display: none; }
+  .ink-blot { animation: none; opacity: 0.55; transform: scale(1); }
+  .stream-caret::after { animation: none !important; }
+}

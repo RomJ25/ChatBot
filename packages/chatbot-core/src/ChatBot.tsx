@@ -21,12 +21,29 @@ export type ChatBotProps = {
   headline: string;
   /** URL/path to a logo image. When set, replaces the default Sparkles icon in the header. */
   logoUrl?: string;
+  /**
+   * URL/path to a hero image rendered inside the welcome bubble (above the
+   * Markdown welcome text). When unset, no hero is shown.
+   */
+  welcomeHeroUrl?: string;
+  /**
+   * Reveal cadence for streamed responses.
+   *   "frame" — current behavior, ~60 React flushes/sec, snappy.
+   *   "quill" — paced char-class-aware reveal with punctuation pauses.
+   * Defaults to "frame". Honors prefers-reduced-motion (forces "frame").
+   */
+  cadence?: "frame" | "quill";
   /** Pre-built system prompt. The app composes this from its own content. */
   systemPrompt: string;
   /** Pre-built welcome message (Markdown). Shown as the first bot bubble. */
   welcome: string;
   /** Suggestion chips shown above the input. Rendered in order. */
   suggestions: ChatSuggestion[];
+  /**
+   * When true, the first paragraph of the welcome bubble's Markdown gets
+   * rendered with a floated drop-cap initial (de-vincho aesthetic).
+   */
+  dropCap?: boolean;
 };
 
 // Keep only the display-relevant fields on a message. Holding `File` refs
@@ -48,6 +65,12 @@ type Message = {
   error?: boolean;
   excludeFromLlm?: boolean;
   llmContent?: string;
+  /** When set, render a hero image inside this bubble above the Markdown body. */
+  heroUrl?: string;
+  /** When true, this bubble is the welcome card (used for drop-cap styling). */
+  isWelcome?: boolean;
+  /** When true, render the first paragraph of this bubble with a drop-cap. */
+  dropCap?: boolean;
 };
 
 const NOT_CONFIGURED_CONTENT = `⚙️ **לא הוגדרו פרטי ה-LLM.**
@@ -131,17 +154,40 @@ function longestBacktickFence(content: string): string {
 let nextMessageId = 2;
 const mkId = () => ++nextMessageId;
 
+// Tracks the user's motion preference. Animations and the quill cadence
+// downgrade to instant when this returns true.
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return false;
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  });
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handler = (e: MediaQueryListEvent) => setReduced(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+  return reduced;
+}
+
 export default function ChatBot({
   headline,
   logoUrl,
+  welcomeHeroUrl,
+  cadence = "frame",
   systemPrompt,
   welcome,
   suggestions,
+  dropCap = false,
 }: ChatBotProps) {
   const client = useMemo(
     () => createDefaultClient(systemPrompt),
     [systemPrompt],
   );
+
+  const reducedMotion = usePrefersReducedMotion();
+  const effectiveCadence = reducedMotion ? "frame" : cadence;
 
   const [messages, setMessages] = useState<Message[]>(() => [
     {
@@ -150,6 +196,11 @@ export default function ChatBot({
       content: client ? welcome : NOT_CONFIGURED_CONTENT,
       timestamp: now(),
       excludeFromLlm: true,
+      isWelcome: true,
+      // Show the hero only on the configured-and-ready welcome — when
+      // configuration is missing we surface the config-hint message instead.
+      heroUrl: client ? welcomeHeroUrl : undefined,
+      dropCap: client ? dropCap : false,
     },
   ]);
   const [inputValue, setInputValue] = useState("");
@@ -173,6 +224,13 @@ export default function ChatBot({
   const rafRef = useRef<number | null>(null);
   const lastMouseRaf = useRef<number | null>(null);
   const abortedRef = useRef(false);
+  // Quill cadence: timestamp of the next allowed commit. The drain loop is
+  // a single rAF tick that re-arms itself; advancing this ref pauses the
+  // drain without burning frames in a busy loop.
+  const quillNextCommitAtRef = useRef(0);
+  // Tracks whether the drain loop has commit anything yet — used to gate
+  // the descend-from-above signature animation to fire exactly once.
+  const quillFirstCommitRef = useRef(true);
 
   // Mouse-reactive spotlight: write to a CSS variable directly so we don't
   // re-render the React tree on every frame. Reads `--mouse-x` / `--mouse-y`
@@ -221,7 +279,14 @@ export default function ChatBot({
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  // Auto-scroll-to-bottom on every state change *except* the initial render
+  // where only the welcome bubble exists. With a welcome hero image present
+  // the welcome bubble can exceed viewport height, and pinning the welcome
+  // to the bottom of the scroll container would hide the hero — the worst
+  // possible first impression. Counting messages is robust against
+  // StrictMode double-mounts (where a one-shot ref would still fire twice).
   useEffect(() => {
+    if (messages.length <= 1 && !isTyping) return;
     scrollToBottom();
   }, [messages, isTyping, scrollToBottom]);
 
@@ -282,7 +347,9 @@ export default function ChatBot({
     }
   };
 
-  const scheduleFlush = () => {
+  // Frame-cadence: dump the entire pending buffer into state once per rAF.
+  // This is the historic behaviour and what sniro keeps using.
+  const scheduleFrameFlush = () => {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
@@ -298,12 +365,76 @@ export default function ChatBot({
     });
   };
 
+  // Char-class-aware delay used by the quill cadence drain.
+  // A simple table beats a tunable curve here — handwriting cadence is what
+  // we're modelling, not natural-language token timing.
+  const quillCharDelay = (ch: string, next: string | undefined): number => {
+    if (ch === "\n") {
+      // Paragraph break (\n\n) gets a long pause so the eye registers it.
+      if (next === "\n") return 700 + Math.random() * 200;
+      return 240 + Math.random() * 120;
+    }
+    if (".,;:!?".includes(ch)) return 120 + Math.random() * 60;
+    if ("*_`#->".includes(ch)) return 60 + Math.random() * 20;
+    if (ch === " ") return 18 + Math.random() * 10;
+    const cc = ch.charCodeAt(0);
+    // Latin upper-case feels weighted (initial caps in a sentence).
+    if (cc >= 0x41 && cc <= 0x5a) return 22 + Math.random() * 12;
+    // Common Latin lower-case + Hebrew aleph-tav block: fast.
+    if (
+      (cc >= 0x61 && cc <= 0x7a) ||
+      (cc >= 0x05d0 && cc <= 0x05ea)
+    ) {
+      return 14 + Math.random() * 8;
+    }
+    return 18 + Math.random() * 10;
+  };
+
+  // Quill cadence drain: pull one char per tick when nextCommitAt allows.
+  // Re-arms itself until the buffer is empty. Caller must drain the buffer
+  // again in the finally block to handle the case where the stream closes
+  // with characters still queued behind a long pause.
+  const scheduleQuillFlush = () => {
+    if (rafRef.current !== null) return;
+    const tick = () => {
+      rafRef.current = null;
+      const id = streamingIdRef.current;
+      if (id === null) return;
+      const buf = bufferRef.current;
+      if (buf.length === 0) return; // drained — wait for more producer input
+      const t = performance.now();
+      if (t < quillNextCommitAtRef.current) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      const ch = buf[0];
+      bufferRef.current = buf.slice(1);
+      quillNextCommitAtRef.current = t + quillCharDelay(ch, buf[1]);
+      // First char of the response triggers the descend-from-above signature
+      // by flipping a one-shot flag. We rely on CSS animation iteration count
+      // to play it once on first visibility.
+      const isFirst = quillFirstCommitRef.current;
+      if (isFirst) quillFirstCommitRef.current = false;
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === id ? { ...m, content: m.content + ch } : m,
+        ),
+      );
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    rafRef.current = requestAnimationFrame(tick);
+  };
+
+  const scheduleFlush = () =>
+    effectiveCadence === "quill" ? scheduleQuillFlush() : scheduleFrameFlush();
+
   const cancelFlush = () => {
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
     bufferRef.current = "";
+    quillNextCommitAtRef.current = 0;
   };
 
   const ensureStreamingBubble = (): number => {
@@ -369,6 +500,8 @@ export default function ChatBot({
     streamingIdRef.current = null;
     bufferRef.current = "";
     abortedRef.current = false;
+    quillNextCommitAtRef.current = 0;
+    quillFirstCommitRef.current = true;
     setIsTyping(true);
     setIsStreaming(true);
 
@@ -557,19 +690,15 @@ export default function ChatBot({
   return (
     <div
       dir="rtl"
+      data-cadence={effectiveCadence}
       className="min-h-dvh relative overflow-hidden font-heebo"
-      style={{ backgroundColor: "#eef2f7" }}
+      style={{ backgroundColor: "var(--bg)", color: "var(--ink)" }}
     >
       <style
         dangerouslySetInnerHTML={{
           __html: `
-        ::selection { background: rgba(37, 99, 235, 0.15); color: #0f172a; text-shadow: none; }
-        .font-heebo { font-family: 'Heebo', ui-sans-serif, system-ui, "Segoe UI", "Arial Hebrew", Arial, sans-serif; letter-spacing: -0.012em; }
-
-        :root {
-          --ease-fluid: cubic-bezier(0.2, 0.8, 0.2, 1);
-          --ease-out-quick: cubic-bezier(0.16, 1, 0.3, 1);
-        }
+        ::selection { background: rgba(var(--accent-rgb), 0.15); color: var(--ink); text-shadow: none; }
+        .font-heebo { font-family: var(--font-body); letter-spacing: var(--display-tracking); }
 
         .hw-accelerate {
           will-change: transform, opacity, filter;
@@ -577,57 +706,61 @@ export default function ChatBot({
           transform: translateZ(0);
         }
 
-        .premium-prose { max-width: 65ch; }
-        .premium-prose:hover p, .premium-prose:hover ul, .premium-prose:hover ol, .premium-prose:hover blockquote { color: #7f90a8; text-shadow: none; transition: color 0.4s var(--ease-fluid); }
-        .premium-prose p:hover, .premium-prose ul:hover, .premium-prose ol:hover, .premium-prose blockquote:hover { color: #0f172a; text-shadow: 0px 4px 12px rgba(15, 23, 42, 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85); transition: color 0.15s var(--ease-fluid); }
+        .premium-prose { max-width: 65ch; color: var(--ink); }
+        .premium-prose:hover p, .premium-prose:hover ul, .premium-prose:hover ol, .premium-prose:hover blockquote { color: var(--muted); text-shadow: none; transition: color 0.4s var(--ease-fluid); }
+        .premium-prose p:hover, .premium-prose ul:hover, .premium-prose ol:hover, .premium-prose blockquote:hover { color: var(--ink); text-shadow: 0px 4px 12px rgba(var(--ink-rgb), 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85); transition: color 0.15s var(--ease-fluid); }
         .premium-prose p { margin-bottom: 1.35em; line-height: 1.7; font-size: 15.5px; transition: color 0.4s var(--ease-fluid); }
         .premium-prose p:last-child { margin-bottom: 0; }
 
         .premium-prose strong {
-          font-weight: 600; color: inherit; background: linear-gradient(120deg, rgba(37,99,235,0.08) 0%, rgba(37,99,235,0.02) 100%);
-          padding: 0.1em 0.35em; border-radius: 6px; box-shadow: inset 0 -1px 0 rgba(37,99,235,0.15), 0 2px 4px rgba(37,99,235,0.03);
+          font-weight: 600; color: inherit;
+          background: linear-gradient(120deg, rgba(var(--accent-rgb), 0.08) 0%, rgba(var(--accent-rgb), 0.02) 100%);
+          padding: 0.1em 0.35em; border-radius: 6px;
+          box-shadow: inset 0 -1px 0 rgba(var(--accent-rgb), 0.15), 0 2px 4px rgba(var(--accent-rgb), 0.03);
           letter-spacing: -0.01em; margin: 0 0.1em; transition: color 0.4s var(--ease-fluid);
         }
-        .premium-prose p:hover strong, .premium-prose ul:hover strong, .premium-prose ol:hover strong { color: #0f172a; }
+        .premium-prose p:hover strong, .premium-prose ul:hover strong, .premium-prose ol:hover strong { color: var(--ink); }
 
         .premium-prose code {
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          font-size: 0.85em; color: #2563eb; background: rgba(37, 99, 235, 0.06);
-          border: 1px solid rgba(37, 99, 235, 0.12); padding: 0.2em 0.4em; border-radius: 6px;
+          font-size: 0.85em; color: var(--accent); background: rgba(var(--accent-rgb), 0.06);
+          border: 1px solid rgba(var(--accent-rgb), 0.12); padding: 0.2em 0.4em; border-radius: 6px;
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.8); margin: 0 0.1em; letter-spacing: 0;
         }
-        /* Reset inline-code styling when inside a block (<pre>) */
         .premium-prose pre code {
           color: inherit; background: transparent; border: 0; padding: 0; border-radius: 0;
           box-shadow: none; font-size: 13px; margin: 0;
         }
 
         .premium-prose blockquote {
-          margin: 1.8em 0; padding: 0.8em 1.2em 0.8em 0; border-right: 3px solid rgba(37, 99, 235, 0.4);
-          background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.03)); border-radius: 4px;
+          margin: 1.8em 0; padding: 0.8em 1.2em 0.8em 0;
+          border-right: 3px solid rgba(var(--accent-rgb), 0.4);
+          background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.03)); border-radius: 4px;
           font-style: italic; font-size: 16px; line-height: 1.6; color: inherit; transition: all 0.4s var(--ease-fluid);
         }
-        .premium-prose blockquote:hover { border-right-color: #2563eb; background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.06)); }
+        .premium-prose blockquote:hover { border-right-color: var(--accent); background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.06)); }
 
         .premium-prose ul { margin-top: 1.5em; margin-bottom: 1.5em; padding-right: 1.5em; list-style: none; transition: color 0.4s var(--ease-fluid); }
         .premium-prose li { position: relative; margin-bottom: 1em; line-height: 1.65; font-size: 15.5px; }
         .premium-prose li:last-child { margin-bottom: 0; }
         .premium-prose ul li::before {
           content: ""; position: absolute; right: -1.4em; top: 0.65em; width: 6px; height: 6px;
-          border-radius: 50%; background: #2563eb; box-shadow: 0 0 10px rgba(37,99,235,0.6), inset 0 1px 2px rgba(255,255,255,0.8);
+          border-radius: 50%; background: var(--accent);
+          box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6), inset 0 1px 2px rgba(255,255,255,0.8);
           transition: all 0.4s var(--ease-fluid);
         }
-        .premium-prose:hover ul:not(:hover) li::before { background: #7f90a8; box-shadow: none; }
+        .premium-prose:hover ul:not(:hover) li::before { background: var(--muted); box-shadow: none; }
 
         .text-ink {
-          color: #0f172a; text-shadow: 0px 4px 12px rgba(15, 23, 42, 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85);
+          color: var(--ink);
+          text-shadow: 0px 4px 12px rgba(var(--ink-rgb), 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85);
           -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
         }
 
         .ink-settle { animation: inkSettle 0.5s var(--ease-fluid) forwards; opacity: 0; will-change: transform, filter, opacity, letter-spacing; }
         @keyframes inkSettle {
-          0% { filter: blur(5px); opacity: 0; transform: translate3d(0, 8px, 0); color: #435569; letter-spacing: -0.02em; }
-          100% { filter: blur(0); opacity: 1; transform: translate3d(0, 0, 0); color: #0f172a; letter-spacing: -0.012em; }
+          0% { filter: blur(5px); opacity: 0; transform: translate3d(0, 8px, 0); color: var(--ink-soft); letter-spacing: -0.02em; }
+          100% { filter: blur(0); opacity: 1; transform: translate3d(0, 0, 0); color: var(--ink); letter-spacing: var(--display-tracking); }
         }
 
         .specular-highlight::before {
@@ -636,9 +769,10 @@ export default function ChatBot({
         }
 
         .glass-panel {
-          position: relative; background: linear-gradient(135deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 255, 0.8) 100%);
-          backdrop-filter: blur(30px) saturate(1.4); -webkit-backdrop-filter: blur(30px) saturate(1.4); border: 1px solid rgba(255, 255, 255, 0.85);
-          box-shadow: 0 16px 40px -8px rgba(15, 23, 42, 0.04), inset 0px 1px 1px rgba(255, 255, 255, 1), inset 0px -1px 2px rgba(37, 99, 235, 0.03);
+          position: relative; background: var(--panel-bg);
+          backdrop-filter: blur(30px) saturate(1.4); -webkit-backdrop-filter: blur(30px) saturate(1.4);
+          border: 1px solid var(--panel-border);
+          box-shadow: var(--panel-shadow);
           transition: transform 0.3s var(--ease-fluid), box-shadow 0.3s var(--ease-fluid), border-color 0.3s var(--ease-fluid); overflow: hidden;
         }
         .glass-panel::after {
@@ -648,48 +782,51 @@ export default function ChatBot({
         }
         .glass-panel > * { position: relative; z-index: 1; }
         .glass-panel:hover {
-          box-shadow: 0 24px 60px -12px rgba(37, 99, 235, 0.08), inset 0px 2px 3px rgba(255, 255, 255, 1), inset 0px -1px 2px rgba(37, 99, 235, 0.05);
+          box-shadow: var(--panel-shadow-hover);
           border-color: rgba(255, 255, 255, 1); transition: all 0.15s var(--ease-out-quick);
         }
 
         .bot-bubble {
-          background: linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(240, 246, 255, 0.85) 100%);
-          box-shadow: 0 16px 40px -8px rgba(15, 23, 42, 0.04), inset 0px 1px 1px rgba(255, 255, 255, 1), inset 1px 0px 20px rgba(37, 99, 235, 0.04);
+          background: var(--bubble-bot-bg);
+          box-shadow: var(--bubble-bot-shadow);
         }
         .bot-bubble.error-bubble {
           background: linear-gradient(135deg, rgba(254, 242, 242, 0.98) 0%, rgba(254, 226, 226, 0.7) 100%);
-          box-shadow: 0 16px 40px -8px rgba(239, 68, 68, 0.06), inset 0px 1px 1px rgba(255, 255, 255, 1), inset 1px 0px 20px rgba(239, 68, 68, 0.05);
+          box-shadow: 0 16px 40px -8px rgba(var(--error-rgb), 0.06), inset 0px 1px 1px rgba(255, 255, 255, 1), inset 1px 0px 20px rgba(var(--error-rgb), 0.05);
         }
-        /* Retint prose pills and inline code inside error bubbles so the
-           blue accents don't clash with the red/pink background. */
         .error-bubble .premium-prose strong {
-          background: linear-gradient(120deg, rgba(239,68,68,0.10) 0%, rgba(239,68,68,0.02) 100%);
-          box-shadow: inset 0 -1px 0 rgba(239,68,68,0.22), 0 2px 4px rgba(239,68,68,0.04);
+          background: linear-gradient(120deg, rgba(var(--error-rgb), 0.10) 0%, rgba(var(--error-rgb), 0.02) 100%);
+          box-shadow: inset 0 -1px 0 rgba(var(--error-rgb), 0.22), 0 2px 4px rgba(var(--error-rgb), 0.04);
         }
         .error-bubble .premium-prose code {
-          color: #b91c1c; background: rgba(239, 68, 68, 0.06);
-          border-color: rgba(239, 68, 68, 0.18);
+          color: var(--error-deep); background: rgba(var(--error-rgb), 0.06);
+          border-color: rgba(var(--error-rgb), 0.18);
         }
         .error-bubble .premium-prose pre {
-          background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.18);
+          background: rgba(var(--error-rgb), 0.05); border-color: rgba(var(--error-rgb), 0.18);
         }
 
         .glass-input-focused {
           background: rgba(255, 255, 255, 1) !important;
-          box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15), 0 24px 60px rgba(37, 99, 235, 0.1), inset 0 1px 3px rgba(255, 255, 255, 1) !important;
-          border-color: rgba(37, 99, 235, 0.5) !important; transform: translate3d(0, -2px, 0); transition: all 0.4s var(--ease-fluid);
+          box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15), 0 24px 60px rgba(var(--accent-rgb), 0.1), inset 0 1px 3px rgba(255, 255, 255, 1) !important;
+          border-color: rgba(var(--accent-rgb), 0.5) !important; transform: translate3d(0, -2px, 0); transition: all 0.4s var(--ease-fluid);
         }
 
         .glass-chip {
           position: relative; background: rgba(255, 255, 255, 0.7); border: 1px solid rgba(255, 255, 255, 0.7);
-          box-shadow: 0 4px 15px rgba(15, 23, 42, 0.02), inset 0 1px 1px rgba(255,255,255,0.9); transition: all 0.3s var(--ease-fluid); overflow: hidden; cursor: pointer;
+          box-shadow: 0 4px 15px rgba(var(--ink-rgb), 0.02), inset 0 1px 1px rgba(255,255,255,0.9);
+          transition: all 0.3s var(--ease-fluid); overflow: hidden; cursor: pointer;
+          color: var(--ink-soft);
         }
         .glass-chip:hover {
           background: rgba(255, 255, 255, 0.98); transform: translate3d(0, -3px, 0) scale3d(1.02, 1.02, 1);
-          box-shadow: 0 12px 30px rgba(37, 99, 235, 0.08), 0 0 0 1px rgba(37, 99, 235, 0.2), inset 0 1px 2px rgba(255,255,255,1); transition: all 0.15s var(--ease-out-quick);
+          box-shadow: 0 12px 30px rgba(var(--accent-rgb), 0.08), 0 0 0 1px rgba(var(--accent-rgb), 0.2), inset 0 1px 2px rgba(255,255,255,1);
+          transition: all 0.15s var(--ease-out-quick);
         }
         .glass-chip:active {
-          transform: translate3d(0, -1px, 0) scale3d(0.96, 0.96, 1); box-shadow: 0 4px 15px rgba(37, 99, 235, 0.05), inset 0 1px 1px rgba(255,255,255,0.9); transition: all 0.1s ease-out;
+          transform: translate3d(0, -1px, 0) scale3d(0.96, 0.96, 1);
+          box-shadow: 0 4px 15px rgba(var(--accent-rgb), 0.05), inset 0 1px 1px rgba(255,255,255,0.9);
+          transition: all 0.1s ease-out;
         }
 
         .bot-message-enter { animation: glassMaterialize 0.5s var(--ease-fluid) forwards; }
@@ -711,14 +848,14 @@ export default function ChatBot({
           100% { transform: translate3d(0, 0, 0) scale3d(1, 1, 1) rotate(0deg); opacity: 0.5; }
         }
         .aurora-blob { position: absolute; border-radius: 50%; filter: blur(120px); animation: aurora-flow 25s infinite ease-in-out alternate; z-index: 0; pointer-events: none; will-change: transform; }
-        .icon-glow { filter: drop-shadow(0px 4px 8px rgba(37, 99, 235, 0.4)); }
-        .icon-glow-strong { filter: drop-shadow(0px 0px 12px rgba(37, 99, 235, 0.6)); }
+        .icon-glow { filter: drop-shadow(0px 4px 8px rgba(var(--accent-rgb), 0.4)); }
+        .icon-glow-strong { filter: drop-shadow(0px 0px 12px rgba(var(--accent-rgb), 0.6)); }
 
         .text-etched { text-shadow: 0px 1px 0px rgba(255, 255, 255, 0.9); }
 
         .chat-scroll-mask {
-          mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 100%);
-          -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 6%, black 100%);
+          mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 100%);
+          -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 100%);
         }
 
         @keyframes slideUpFade {
@@ -737,23 +874,33 @@ export default function ChatBot({
         }
         .stream-caret {
           display: inline-block; width: 2px; height: 1.05em; vertical-align: -0.15em;
-          margin-right: 3px; background: #2563eb; border-radius: 1px;
-          box-shadow: 0 0 8px rgba(37, 99, 235, 0.7), 0 0 2px rgba(37, 99, 235, 0.9);
+          margin-right: 3px; background: var(--caret-color); border-radius: 1px;
+          box-shadow: var(--caret-glow);
           animation: caretBlink 1s steps(2) infinite;
+          position: relative;
+        }
+        .stream-caret::after {
+          content: var(--caret-content);
+          position: absolute;
+          top: 50%; right: 0;
+          transform: translate(50%, -50%) rotate(-25deg);
+          font-size: 0;
+          line-height: 0;
         }
 
         .send-btn-active {
-          box-shadow: 0 10px 30px -5px rgba(37, 99, 235, 0.6), inset 0 1px 2px rgba(255, 255, 255, 0.5);
+          background: var(--send-btn-bg);
+          box-shadow: var(--send-btn-shadow-active);
           transition: all 0.3s var(--ease-fluid);
         }
         .send-btn-active:active {
-          transform: scale3d(0.9, 0.9, 1); box-shadow: 0 4px 15px -2px rgba(37, 99, 235, 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.2); transition: all 0.1s ease-out;
+          transform: scale3d(0.9, 0.9, 1); box-shadow: 0 4px 15px -2px rgba(var(--accent-rgb), 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.2); transition: all 0.1s ease-out;
         }
 
         .stop-btn {
-          background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+          background: linear-gradient(135deg, var(--error) 0%, var(--error-strong) 100%);
           color: white;
-          box-shadow: 0 10px 30px -5px rgba(239, 68, 68, 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.4);
+          box-shadow: 0 10px 30px -5px rgba(var(--error-rgb), 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.4);
           transition: all 0.2s var(--ease-fluid);
         }
         .stop-btn:hover { transform: scale3d(1.05, 1.05, 1); }
@@ -763,29 +910,133 @@ export default function ChatBot({
 
         .glass-input textarea::-webkit-scrollbar { width: 4px; }
         .glass-input textarea::-webkit-scrollbar-track { background: transparent; }
-        .glass-input textarea::-webkit-scrollbar-thumb { background: rgba(37, 99, 235, 0.2); border-radius: 4px; }
-        .glass-input textarea::-webkit-scrollbar-thumb:hover { background: rgba(37, 99, 235, 0.4); }
+        .glass-input textarea::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb), 0.2); border-radius: 4px; }
+        .glass-input textarea::-webkit-scrollbar-thumb:hover { background: rgba(var(--accent-rgb), 0.4); }
 
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(127, 144, 168, 0.2); border-radius: 10px; border: 2px solid #eef2f7; }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(127, 144, 168, 0.4); }
+        ::-webkit-scrollbar-thumb { background: rgba(var(--muted-rgb), 0.2); border-radius: 10px; border: 2px solid var(--bg); }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(var(--muted-rgb), 0.4); }
+
+        /* Welcome hero — every persona gets a fully-themed frame via tokens.
+           --welcome-hero-shape:    border-radius (default rounded rect)
+           --welcome-hero-aspect:   aspect-ratio (default auto)
+           --welcome-hero-fit:      object-fit (default contain)
+           --welcome-hero-position: object-position (default center)
+           --welcome-hero-frame:    box-shadow stack
+           --welcome-hero-bg:       backdrop tint behind image
+           --welcome-hero-width:    max-width
+        */
+        .welcome-hero {
+          display: block;
+          width: 100%;
+          max-width: var(--welcome-hero-width, 280px);
+          aspect-ratio: var(--welcome-hero-aspect, auto);
+          height: auto;
+          object-fit: var(--welcome-hero-fit, contain);
+          object-position: var(--welcome-hero-position, center);
+          margin: 0 auto 1.25rem;
+          border-radius: var(--welcome-hero-shape, 16px);
+          box-shadow: var(--welcome-hero-frame);
+          background: var(--welcome-hero-bg, rgba(255, 255, 255, 0.6));
+        }
+        @media (max-width: 480px) {
+          .welcome-hero { max-width: 200px; margin-bottom: 0.75rem; }
+        }
+
+        /* Drop cap — only active when --welcome-dropcap is set to "1". */
+        .welcome-bubble[data-dropcap="1"] .premium-prose > p:first-of-type::first-letter {
+          float: right;
+          font-family: var(--font-display);
+          font-style: var(--display-style);
+          font-weight: 600;
+          font-size: 3.6em;
+          line-height: 0.9;
+          padding: 0.05em 0 0.05em 0.18em;
+          margin-inline-start: 0.18em;
+          color: var(--accent);
+          text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
+        }
+        @media (max-width: 480px) {
+          .welcome-bubble[data-dropcap="1"] .premium-prose > p:first-of-type::first-letter {
+            font-size: 2.6em;
+          }
+        }
+
+        /* Manuscript margin rule (de-vincho only). Logical property so it
+           naturally renders on the leading edge in RTL. */
+        .chat-shell {
+          position: relative;
+        }
+        .chat-shell::before {
+          content: "";
+          position: absolute;
+          top: 8%;
+          bottom: 8%;
+          inset-inline-end: -8px;
+          width: 1px;
+          background: var(--pattern-margin-rule);
+          pointer-events: none;
+        }
+        @media (max-width: 480px) {
+          .chat-shell::before { display: none; }
+        }
+
+        .paperclip-btn:hover { background: rgba(var(--accent-rgb), 0.1); color: var(--accent); }
+        .chat-textarea::placeholder { color: var(--muted); }
+
+        /* Bot avatar (small circle next to bubble) — adopts persona accent. */
+        .bot-avatar {
+          background: rgba(255, 255, 255, 0.6);
+          border: 1px solid rgba(255, 255, 255, 0.8);
+          color: var(--accent);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+          box-shadow: 0 4px 8px rgba(var(--ink-rgb), 0.06);
+        }
+
+        /* User bubble — token-driven so each persona owns its emphasis colour. */
+        .user-bubble {
+          background: var(--bubble-user-bg);
+          border: 1px solid var(--bubble-user-border);
+          box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.7),
+            0 8px 20px -5px rgba(var(--accent-rgb), 0.05);
+        }
+
+        /* Bot-bubble accent rail — runs down the leading edge of the bubble. */
+        .bubble-rail {
+          background: linear-gradient(to bottom, rgba(var(--accent-rgb), 0.6), rgba(var(--accent-rgb), 0.1));
+          box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.3);
+        }
+        .error-bubble + .bubble-rail,
+        .bubble-rail.error {
+          background: linear-gradient(to bottom, rgba(var(--error-rgb), 0.6), rgba(var(--error-rgb), 0.1));
+          box-shadow: 0 0 8px rgba(var(--error-rgb), 0.3);
+        }
       `,
         }}
       />
 
       <div className="absolute inset-0 overflow-hidden pointer-events-none mix-blend-multiply opacity-80">
         <div
-          className="aurora-blob hw-accelerate w-[900px] h-[600px] bg-[#2563eb]/[0.04] top-[-15%] right-[-20%]"
-          style={{ animationDuration: "30s" }}
+          className="aurora-blob hw-accelerate w-[900px] h-[600px] top-[-15%] right-[-20%]"
+          style={{ animationDuration: "30s", background: "var(--aurora-1)" }}
         />
         <div
-          className="aurora-blob hw-accelerate w-[1000px] h-[700px] bg-[#60a5fa]/[0.03] bottom-[-20%] left-[-20%]"
-          style={{ animationDuration: "35s", animationDelay: "-10s" }}
+          className="aurora-blob hw-accelerate w-[1000px] h-[700px] bottom-[-20%] left-[-20%]"
+          style={{
+            animationDuration: "35s",
+            animationDelay: "-10s",
+            background: "var(--aurora-2)",
+          }}
         />
         <div
-          className="aurora-blob hw-accelerate w-[600px] h-[500px] bg-white/[0.6] top-[30%] left-[20%]"
-          style={{ animationDuration: "20s", filter: "blur(100px)" }}
+          className="aurora-blob hw-accelerate w-[600px] h-[500px] top-[30%] left-[20%]"
+          style={{
+            animationDuration: "20s",
+            filter: "blur(100px)",
+            background: "var(--aurora-3)",
+          }}
         />
       </div>
 
@@ -794,37 +1045,83 @@ export default function ChatBot({
         className="absolute inset-0 pointer-events-none transition-opacity duration-1000 mix-blend-overlay z-0 hw-accelerate"
       />
 
-      <div className="absolute top-0 left-0 w-full h-[30vh] bg-gradient-to-b from-[#eef2f7] to-transparent z-10 pointer-events-none opacity-90 hw-accelerate" />
+      <div
+        className="absolute top-0 left-0 w-full h-[30vh] z-10 pointer-events-none opacity-90 hw-accelerate"
+        style={{
+          backgroundImage:
+            "linear-gradient(to bottom, var(--bg), transparent)",
+        }}
+      />
 
       <div
-        className="relative z-20 max-w-4xl mx-auto h-dvh flex flex-col px-4 py-8"
+        className="chat-shell relative z-20 max-w-4xl mx-auto h-dvh flex flex-col px-4 py-8"
+        style={{ backgroundImage: "var(--pattern-bg)" }}
         onDragEnter={handleDragEnter}
         onDragLeave={handleDragLeave}
         onDragOver={handleDragOver}
         onDrop={handleDrop}
       >
-        <header className="flex items-center justify-between mb-8 px-2 bot-message-enter hw-accelerate shrink-0">
+        <header
+          className="flex items-center justify-between mb-8 px-2 bot-message-enter hw-accelerate shrink-0"
+          data-streaming={isStreaming ? "true" : "false"}
+        >
           <div className="flex items-center gap-3">
             {logoUrl ? (
-              <div className="w-10 h-10 rounded-full glass-panel flex items-center justify-center overflow-hidden relative">
+              <div
+                data-logo="custom"
+                className="w-10 h-10 rounded-full glass-panel flex items-center justify-center overflow-hidden relative"
+                style={{ color: "var(--accent)" }}
+              >
                 <img
                   src={logoUrl}
                   alt=""
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-contain p-1"
                 />
-                <div className="absolute top-0 right-0 w-2.5 h-2.5 bg-[#2563eb] rounded-full border-2 border-white shadow-[0_0_8px_rgba(37,99,235,0.4)]" />
+                <div
+                  className="absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2"
+                  style={{
+                    backgroundColor: "var(--accent)",
+                    borderColor: "var(--bg-elev, #fff)",
+                    boxShadow: "0 0 8px rgba(var(--accent-rgb), 0.4)",
+                  }}
+                />
               </div>
             ) : (
-              <div className="w-10 h-10 rounded-full glass-panel flex items-center justify-center relative">
-                <Sparkles className="w-5 h-5 text-[#2563eb] icon-glow" />
-                <div className="absolute top-0 right-0 w-2.5 h-2.5 bg-[#2563eb] rounded-full border-2 border-white shadow-[0_0_8px_rgba(37,99,235,0.4)]" />
+              <div
+                className="w-10 h-10 rounded-full glass-panel flex items-center justify-center relative"
+                style={{ color: "var(--accent)" }}
+              >
+                <Sparkles
+                  className="w-5 h-5 icon-glow"
+                  style={{ color: "var(--accent)" }}
+                />
+                <div
+                  className="absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2"
+                  style={{
+                    backgroundColor: "var(--accent)",
+                    borderColor: "var(--bg-elev, #fff)",
+                    boxShadow: "0 0 8px rgba(var(--accent-rgb), 0.4)",
+                  }}
+                />
               </div>
             )}
             <div>
-              <h1 className="text-[#0f172a] font-semibold text-[17px] leading-tight tracking-tight">
+              <h1
+                className="font-semibold text-[17px] leading-tight"
+                style={{
+                  color: "var(--ink)",
+                  fontFamily: "var(--font-display)",
+                  fontStyle: "var(--display-style)",
+                  fontWeight: "var(--display-weight)" as unknown as number,
+                  letterSpacing: "var(--display-tracking)",
+                }}
+              >
                 {headline}
               </h1>
-              <p className="text-[#7f90a8] text-[13px] font-medium text-etched">
+              <p
+                className="text-[13px] font-medium text-etched"
+                style={{ color: "var(--muted)" }}
+              >
                 {isStreaming
                   ? "מזרים תשובה…"
                   : showConfigHintInHeader
@@ -834,7 +1131,10 @@ export default function ChatBot({
             </div>
           </div>
           <div className="flex gap-2">
-            <div className="px-3 py-1.5 rounded-full glass-panel text-[#435569] text-xs font-semibold flex items-center gap-1.5 shadow-sm">
+            <div
+              className="px-3 py-1.5 rounded-full glass-panel text-xs font-semibold flex items-center gap-1.5 shadow-sm"
+              style={{ color: "var(--ink-soft)" }}
+            >
               <span
                 className={`w-1.5 h-1.5 rounded-full block ${
                   showConfigHintInHeader
@@ -859,7 +1159,7 @@ export default function ChatBot({
           role="log"
           aria-live="polite"
           aria-busy={isStreaming}
-          className={`flex-1 overflow-y-auto mb-6 px-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-opacity duration-500 ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
+          className={`flex-1 overflow-y-auto mb-6 px-2 pt-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-opacity duration-500 ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
         >
           {messages.map((msg, i) => (
             <MessageItem
@@ -873,31 +1173,28 @@ export default function ChatBot({
           {isTyping && (
             <div className="flex gap-4 max-w-[85%] bot-message-enter justify-start hw-accelerate">
               <div className="w-8 h-8 rounded-full bg-white/60 border border-white/80 shadow-md flex items-center justify-center flex-shrink-0 mt-1 backdrop-blur-md">
-                <Sparkles className="w-4 h-4 text-[#2563eb] icon-glow" />
+                <Sparkles
+                  className="w-4 h-4 icon-glow"
+                  style={{ color: "var(--accent)" }}
+                />
               </div>
               <div className="glass-panel bot-bubble rounded-2xl rounded-tr-sm px-5 py-4 flex items-center gap-2 hw-accelerate">
-                <div
-                  className="w-2 h-2 rounded-full bg-[#2563eb] shadow-[0_0_8px_rgba(37,99,235,0.6)]"
-                  style={{
-                    animation: "organicPulse 1s ease-in-out infinite",
-                    animationDelay: "0ms",
-                  }}
-                />
-                <div
-                  className="w-2 h-2 rounded-full bg-[#2563eb] shadow-[0_0_8px_rgba(37,99,235,0.6)]"
-                  style={{
-                    animation: "organicPulse 1s ease-in-out infinite",
-                    animationDelay: "150ms",
-                  }}
-                />
-                <div
-                  className="w-2 h-2 rounded-full bg-[#2563eb] shadow-[0_0_8px_rgba(37,99,235,0.6)]"
-                  style={{
-                    animation: "organicPulse 1s ease-in-out infinite",
-                    animationDelay: "300ms",
-                  }}
-                />
-                <span className="text-[#2563eb] text-[13px] font-semibold mr-3 text-etched">
+                {[0, 150, 300].map((delay) => (
+                  <div
+                    key={delay}
+                    className="w-2 h-2 rounded-full"
+                    style={{
+                      backgroundColor: "var(--accent)",
+                      boxShadow: "0 0 8px rgba(var(--accent-rgb), 0.6)",
+                      animation: "organicPulse 1s ease-in-out infinite",
+                      animationDelay: `${delay}ms`,
+                    }}
+                  />
+                ))}
+                <span
+                  className="text-[13px] font-semibold mr-3 text-etched"
+                  style={{ color: "var(--accent)" }}
+                >
                   המערכת חושבת...
                 </span>
               </div>
@@ -913,23 +1210,55 @@ export default function ChatBot({
             style={{ animation: "slideUpFade 0.3s ease-out" }}
             aria-label="גלול למטה"
           >
-            <ArrowDown className="w-5 h-5 text-[#2563eb] icon-glow" />
+            <ArrowDown
+              className="w-5 h-5 icon-glow"
+              style={{ color: "var(--accent)" }}
+            />
           </button>
         )}
 
         {isDragging && (
-          <div className="absolute inset-0 z-50 drag-overlay flex items-center justify-center bg-white/30 rounded-3xl m-4 border-[3px] border-dashed border-[#2563eb]/40 shadow-[inset_0_0_100px_rgba(37,99,235,0.1)] hw-accelerate">
+          <div
+            className="absolute inset-0 z-50 drag-overlay flex items-center justify-center bg-white/30 rounded-3xl m-4 border-[3px] border-dashed hw-accelerate"
+            style={{
+              borderColor: "rgba(var(--accent-rgb), 0.4)",
+              boxShadow: "inset 0 0 100px rgba(var(--accent-rgb), 0.1)",
+            }}
+          >
             <div
-              className="glass-panel p-12 rounded-[2rem] flex flex-col items-center gap-5 transform scale-105 shadow-[0_30px_60px_-15px_rgba(37,99,235,0.2)] border border-white hw-accelerate"
-              style={{ animation: "slideUpFade 0.3s ease-out" }}
+              className="glass-panel p-12 rounded-[2rem] flex flex-col items-center gap-5 transform scale-105 border border-white hw-accelerate"
+              style={{
+                animation: "slideUpFade 0.3s ease-out",
+                boxShadow:
+                  "0 30px 60px -15px rgba(var(--accent-rgb), 0.2)",
+              }}
             >
-              <div className="w-24 h-24 rounded-full bg-gradient-to-br from-[#2563eb]/10 to-[#3b82f6]/5 flex items-center justify-center border border-white/50 shadow-[0_0_30px_rgba(37,99,235,0.2)]">
-                <UploadCloud className="w-12 h-12 text-[#2563eb] icon-glow-strong" />
+              <div
+                className="w-24 h-24 rounded-full flex items-center justify-center border border-white/50"
+                style={{
+                  background:
+                    "linear-gradient(135deg, rgba(var(--accent-rgb), 0.1), rgba(var(--accent-soft-rgb), 0.05))",
+                  boxShadow: "0 0 30px rgba(var(--accent-rgb), 0.2)",
+                }}
+              >
+                <UploadCloud
+                  className="w-12 h-12 icon-glow-strong"
+                  style={{ color: "var(--accent)" }}
+                />
               </div>
-              <h2 className="text-[#0f172a] text-[20px] font-semibold mt-2 tracking-tight">
+              <h2
+                className="text-[20px] font-semibold mt-2 tracking-tight"
+                style={{
+                  color: "var(--ink)",
+                  fontFamily: "var(--font-display)",
+                }}
+              >
                 שחרר קבצים כאן
               </h2>
-              <p className="text-[#435569] text-[14px] font-medium text-center leading-snug">
+              <p
+                className="text-[14px] font-medium text-center leading-snug"
+                style={{ color: "var(--ink-soft)" }}
+              >
                 המסמכים יצורפו להודעה הבאה שלך
                 <br />
                 וייקראו על ידי המודל.
@@ -946,9 +1275,13 @@ export default function ChatBot({
                   key={idx}
                   onClick={() => void handleSend(chip.prompt)}
                   disabled={isStreaming || !client}
-                  className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium text-[#435569] flex items-center gap-2 tracking-tight hw-accelerate disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium flex items-center gap-2 tracking-tight hw-accelerate disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ color: "var(--ink-soft)" }}
                 >
-                  <Search className="w-3.5 h-3.5 text-[#2563eb]/80 icon-glow" />
+                  <Search
+                    className="w-3.5 h-3.5 icon-glow"
+                    style={{ color: "var(--accent)", opacity: 0.8 }}
+                  />
                   {chip.label}
                 </button>
               ))}
@@ -960,18 +1293,27 @@ export default function ChatBot({
               {attachedFiles.map((file, idx) => (
                 <div
                   key={idx}
-                  className="glass-panel pl-2 pr-3 py-1.5 rounded-full flex items-center gap-2 bg-white/80 border-[#2563eb]/20 shadow-[0_4px_10px_rgba(37,99,235,0.05)]"
+                  className="glass-panel pl-2 pr-3 py-1.5 rounded-full flex items-center gap-2 bg-white/80"
+                  style={{
+                    borderColor: "rgba(var(--accent-rgb), 0.2)",
+                    boxShadow: "0 4px 10px rgba(var(--accent-rgb), 0.05)",
+                  }}
                 >
-                  <FileText className="w-3.5 h-3.5 text-[#2563eb] icon-glow" />
+                  <FileText
+                    className="w-3.5 h-3.5 icon-glow"
+                    style={{ color: "var(--accent)" }}
+                  />
                   <span
-                    className="text-[13px] font-medium text-[#0f172a] max-w-[120px] truncate"
+                    className="text-[13px] font-medium max-w-[120px] truncate"
                     dir="ltr"
+                    style={{ color: "var(--ink)" }}
                   >
                     {file.name}
                   </span>
                   <button
                     onClick={() => removeFile(idx)}
-                    className="w-5 h-5 rounded-full hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors text-[#7f90a8]"
+                    className="w-5 h-5 rounded-full hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors"
+                    style={{ color: "var(--muted)" }}
                     aria-label={`הסר ${file.name}`}
                   >
                     <X className="w-3 h-3" />
@@ -985,7 +1327,8 @@ export default function ChatBot({
             className={`glass-panel hw-accelerate rounded-[30px] p-2 flex items-end gap-2 transition-all duration-300 relative overflow-hidden bg-white/60 ${isInputFocused ? "glass-input-focused" : ""}`}
           >
             <label
-              className="w-11 h-11 mb-0.5 rounded-full flex items-center justify-center bg-transparent text-[#7f90a8] hover:bg-[#2563eb]/10 hover:text-[#2563eb] transition-colors shrink-0 relative overflow-hidden group active:scale-90 cursor-pointer"
+              className="paperclip-btn w-11 h-11 mb-0.5 rounded-full flex items-center justify-center bg-transparent transition-colors shrink-0 relative overflow-hidden group active:scale-90 cursor-pointer"
+              style={{ color: "var(--muted)" }}
               title="צרף קובץ"
             >
               <Paperclip className="w-5 h-5 group-hover:scale-110 transition-transform group-hover:icon-glow" />
@@ -1012,9 +1355,12 @@ export default function ChatBot({
               onBlur={() => setIsInputFocused(false)}
               onKeyDown={handleKeyDown}
               placeholder="שאל משהו…"
-              className="flex-1 bg-transparent border-none outline-none text-[#0f172a] placeholder:text-[#7f90a8] text-[15px] font-medium px-2 py-3.5 leading-relaxed resize-none overflow-y-auto"
+              className="flex-1 bg-transparent border-none outline-none text-[15px] font-medium px-2 py-3.5 leading-relaxed resize-none overflow-y-auto chat-textarea"
               rows={1}
-              style={{ maxHeight: "150px" }}
+              style={{
+                maxHeight: "150px",
+                color: "var(--ink)",
+              }}
               dir="rtl"
               aria-label="הקלד הודעה"
             />
@@ -1037,9 +1383,17 @@ export default function ChatBot({
                 }
                 className={`w-12 h-12 mb-0.5 rounded-full flex items-center justify-center shrink-0 ${
                   client && (inputValue.trim() || attachedFiles.length > 0)
-                    ? "bg-gradient-to-br from-[#3b82f6] to-[#2563eb] text-white send-btn-active"
-                    : "bg-[#0f172a]/5 text-[#7f90a8] cursor-not-allowed"
+                    ? "send-btn-active text-white"
+                    : "cursor-not-allowed"
                 }`}
+                style={
+                  client && (inputValue.trim() || attachedFiles.length > 0)
+                    ? undefined
+                    : {
+                        backgroundColor: "rgba(var(--ink-rgb), 0.05)",
+                        color: "var(--muted)",
+                      }
+                }
                 aria-label="שלח הודעה"
               >
                 <Send
@@ -1070,27 +1424,49 @@ const MessageItem = memo(function MessageItem({
     return (
       <div className="flex w-full hw-accelerate justify-start bot-message-enter">
         <div className="flex gap-4 max-w-[85%]">
-          <div className="w-8 h-8 rounded-full bg-white/60 border border-white/80 shadow-md flex items-center justify-center flex-shrink-0 mt-1 backdrop-blur-md">
-            <Sparkles className="w-4 h-4 text-[#2563eb] icon-glow" />
+          <div className="bot-avatar w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1">
+            <Sparkles
+              className="w-4 h-4 icon-glow"
+              style={{ color: "var(--accent)" }}
+            />
           </div>
           <div className="space-y-3 w-full">
             <div className="flex items-center gap-2 mb-1">
-              <span className="text-[12px] font-semibold text-[#435569] text-etched">
+              <span
+                className="text-[12px] font-semibold text-etched"
+                style={{ color: "var(--ink-soft)" }}
+              >
                 {msg.error ? "הודעת מערכת" : "מערכת פנימית"}
               </span>
-              <span className="text-[10px] text-[#7f90a8] text-etched font-medium">
+              <span
+                className="text-[10px] text-etched font-medium"
+                style={{ color: "var(--muted)" }}
+              >
                 {msg.timestamp}
               </span>
             </div>
 
             <div
-              className={`glass-panel bot-bubble specular-highlight hw-accelerate rounded-[24px] rounded-tr-[8px] px-7 py-6 inline-block relative group shadow-[0_20px_40px_-12px_rgba(15,23,42,0.06)] hover:shadow-[0_24px_50px_-10px_rgba(15,23,42,0.08)] max-w-[95%] ${msg.error ? "error-bubble" : ""}`}
+              className={`glass-panel bot-bubble specular-highlight hw-accelerate rounded-[24px] rounded-tr-[8px] px-7 py-6 inline-block relative group max-w-[95%] ${msg.error ? "error-bubble" : ""} ${msg.isWelcome ? "welcome-bubble" : ""}`}
+              style={{
+                boxShadow:
+                  "0 20px 40px -12px rgba(var(--ink-rgb), 0.06), 0 0 0 1px rgba(var(--accent-rgb), 0.04)",
+              }}
+              data-dropcap={msg.dropCap ? "1" : undefined}
             >
               <div className="absolute inset-0 bg-gradient-to-b from-white/60 to-transparent pointer-events-none rounded-[24px] rounded-tr-[8px]" />
               <div
-                className={`absolute right-0 top-6 bottom-6 w-[3px] rounded-l-full opacity-60 group-hover:opacity-100 transition-opacity duration-500 ${msg.error ? "bg-gradient-to-b from-red-500/60 to-red-500/10 shadow-[0_0_8px_rgba(239,68,68,0.3)]" : "bg-gradient-to-b from-[#2563eb]/60 to-[#2563eb]/10 shadow-[0_0_8px_rgba(37,99,235,0.3)]"}`}
+                className={`absolute right-0 top-6 bottom-6 w-[3px] rounded-l-full opacity-60 group-hover:opacity-100 transition-opacity duration-500 bubble-rail ${msg.error ? "error" : ""}`}
               />
               <div className="relative z-10 pr-2">
+                {msg.heroUrl && (
+                  <img
+                    src={msg.heroUrl}
+                    alt=""
+                    className="welcome-hero"
+                    loading="eager"
+                  />
+                )}
                 <Markdown>{msg.content || " "}</Markdown>
                 {msg.streaming && <span className="stream-caret" />}
               </div>
@@ -1099,10 +1475,14 @@ const MessageItem = memo(function MessageItem({
             {msg.error && isLatest && (
               <button
                 onClick={() => onRetry(msg.id)}
-                className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium text-[#435569] inline-flex items-center gap-2 hw-accelerate"
+                className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium inline-flex items-center gap-2 hw-accelerate"
+                style={{ color: "var(--ink-soft)" }}
                 aria-label="נסה שוב"
               >
-                <RotateCcw className="w-3.5 h-3.5 text-[#2563eb]" />
+                <RotateCcw
+                  className="w-3.5 h-3.5"
+                  style={{ color: "var(--accent)" }}
+                />
                 נסה שוב
               </button>
             )}
@@ -1116,10 +1496,16 @@ const MessageItem = memo(function MessageItem({
     <div className="flex w-full hw-accelerate justify-end user-message-enter">
       <div className="max-w-[75%] flex flex-col items-end">
         <div className="flex items-center gap-2 mb-1">
-          <span className="text-[10px] text-[#7f90a8] text-etched font-medium">
+          <span
+            className="text-[10px] text-etched font-medium"
+            style={{ color: "var(--muted)" }}
+          >
             {msg.timestamp}
           </span>
-          <span className="text-[12px] font-semibold text-[#435569] text-etched">
+          <span
+            className="text-[12px] font-semibold text-etched"
+            style={{ color: "var(--ink-soft)" }}
+          >
             את/ה
           </span>
         </div>
@@ -1129,9 +1515,13 @@ const MessageItem = memo(function MessageItem({
               {msg.files.map((file, i) => (
                 <div
                   key={i}
-                  className="glass-panel px-3 py-2 rounded-xl flex items-center gap-2 text-[#0f172a] bg-white/60 backdrop-blur-xl hw-accelerate"
+                  className="glass-panel px-3 py-2 rounded-xl flex items-center gap-2 bg-white/60 backdrop-blur-xl hw-accelerate"
+                  style={{ color: "var(--ink)" }}
                 >
-                  <FileText className="w-4 h-4 text-[#2563eb]" />
+                  <FileText
+                    className="w-4 h-4"
+                    style={{ color: "var(--accent)" }}
+                  />
                   <span
                     className="text-[13px] font-medium max-w-[150px] truncate text-etched"
                     dir="ltr"
@@ -1143,7 +1533,7 @@ const MessageItem = memo(function MessageItem({
             </div>
           )}
           {msg.content && (
-            <div className="bg-gradient-to-br from-[#2563eb]/[0.08] to-[#2563eb]/[0.01] border border-[#2563eb]/20 rounded-[22px] rounded-tl-[6px] px-6 py-5 inline-block shadow-[inset_0_1px_2px_rgba(255,255,255,0.7),_0_8px_20px_-5px_rgba(37,99,235,0.05)] backdrop-blur-xl relative overflow-hidden specular-highlight hw-accelerate">
+            <div className="user-bubble rounded-[22px] rounded-tl-[6px] px-6 py-5 inline-block backdrop-blur-xl relative overflow-hidden specular-highlight hw-accelerate">
               <p className="text-ink text-[15.5px] leading-[1.65] font-medium relative z-10 whitespace-pre-wrap">
                 {msg.content}
               </p>

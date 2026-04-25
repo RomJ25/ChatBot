@@ -1,0 +1,24 @@
+<svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+  <!-- five-point star background, faint accent -->
+  <g class="wings" stroke-opacity="0.35" stroke-width="1.6">
+    <path d="M32 6 L36.6 19.6 L51 20.4 L39.7 29.4 L43.5 43.4 L32 35.4 L20.5 43.4 L24.3 29.4 L13 20.4 L27.4 19.6 Z"/>
+  </g>
+  <!-- ear tufts -->
+  <path d="M18 22 L22 14 L26 22"/>
+  <path d="M38 22 L42 14 L46 22"/>
+  <!-- head silhouette -->
+  <path d="M16 30 C16 22 22 18 32 18 C42 18 48 22 48 30 C48 42 42 50 32 50 C22 50 16 42 16 30 Z"/>
+  <!-- eye rings -->
+  <g class="eyes">
+    <g class="eye-left">
+      <circle cx="24.5" cy="30" r="4.6"/>
+      <circle cx="24.5" cy="30" r="1.6" fill="currentColor"/>
+    </g>
+    <g class="eye-right">
+      <circle cx="39.5" cy="30" r="4.6"/>
+      <circle cx="39.5" cy="30" r="1.6" fill="currentColor"/>
+    </g>
+  </g>
+  <!-- beak -->
+  <path d="M30 35 L32 41 L34 35 Z" fill="currentColor" stroke-linejoin="miter"/>
+</svg>

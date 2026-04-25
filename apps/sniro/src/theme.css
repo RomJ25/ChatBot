@@ -1,11 +1,160 @@
 /*
- * Product-specific theme overrides for sniro.
- * Core's index.css defines the design tokens — override them here if you want
- * a different accent color, background gradient, etc.
- *
- * Example:
- *   :root {
- *     --accent: #2563eb;
- *     --surface: #eef2f7;
- *   }
+ * Sniro skin — frosted blue, silver wing, amber active.
+ * Reads as the digital extension of the printed unit crest:
+ *   pale paper bg, ribbon-blue accent, owl glyph in the chrome,
+ *   the full crest as a hero on the welcome card.
  */
+
+:root {
+  /* Ground — pale frosted blue, slightly cooler than the default */
+  --bg: #eef3fa;
+  --bg-elev: #f8fbff;
+  --surface: rgba(255, 255, 255, 0.96);
+  --surface-soft: rgba(247, 251, 255, 0.82);
+  --ink: #0c1a36;
+  --ink-soft: #2f4569;
+  --muted: #6f829c;
+  --ink-rgb: 12, 26, 54;
+  --muted-rgb: 111, 130, 156;
+
+  /* Accent system — pulled from the ribbon and wing of the unit crest */
+  --accent: #3a6db5;            /* ribbon blue */
+  --accent-soft: #6e9bd9;
+  --accent-strong: #1f4a86;
+  --accent-emphasis: #e5a445;   /* warm amber, runway-light for active states */
+  --accent-precious: #cdd6e3;   /* silver wing */
+  --accent-rgb: 58, 109, 181;
+  --accent-soft-rgb: 110, 155, 217;
+
+  /* Bubbles — slightly cooler whites that catch the silver-frost feeling */
+  --bubble-bot-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(232, 242, 255, 0.88) 100%);
+  --bubble-bot-shadow:
+    0 16px 40px -8px rgba(12, 26, 54, 0.06),
+    inset 0px 1px 1px rgba(255, 255, 255, 1),
+    inset 1px 0px 24px rgba(58, 109, 181, 0.05);
+  --bubble-user-bg: linear-gradient(135deg, rgba(58, 109, 181, 0.10), rgba(58, 109, 181, 0.02));
+  --bubble-user-border: rgba(58, 109, 181, 0.22);
+
+  /* Glass-panel — slightly more saturated than the default for the frost feel */
+  --panel-bg: linear-gradient(135deg, rgba(255, 255, 255, 0.96) 0%, rgba(238, 245, 255, 0.82) 100%);
+  --panel-border: rgba(255, 255, 255, 0.88);
+  --panel-shadow:
+    0 16px 40px -8px rgba(12, 26, 54, 0.06),
+    inset 0px 1px 1px rgba(255, 255, 255, 1),
+    inset 0px -1px 2px rgba(58, 109, 181, 0.04);
+  --panel-shadow-hover:
+    0 24px 60px -12px rgba(58, 109, 181, 0.10),
+    inset 0px 2px 3px rgba(255, 255, 255, 1),
+    inset 0px -1px 2px rgba(58, 109, 181, 0.06);
+
+  /* Type — Heebo with slightly tighter tracking for a dignified read */
+  --display-tracking: -0.018em;
+  --display-weight: 700;
+
+  /* Caret — ribbon blue with amber glow (subtle warmth on the streaming bar) */
+  --caret-color: var(--accent);
+  --caret-glow: 0 0 8px rgba(58, 109, 181, 0.7), 0 0 2px rgba(229, 164, 69, 0.4);
+
+  /* Send button — ribbon-blue gradient with a hint of amber */
+  --send-btn-bg: linear-gradient(135deg, #6e9bd9 0%, #3a6db5 100%);
+  --send-btn-shadow-active:
+    0 10px 30px -5px rgba(58, 109, 181, 0.55),
+    inset 0 1px 2px rgba(255, 255, 255, 0.55);
+
+  /* Pattern — faint constellation / star-dust on the chat shell */
+  --pattern-bg:
+    radial-gradient(2px 2px at 12% 18%, rgba(205, 214, 227, 0.55), transparent 60%),
+    radial-gradient(1px 1px at 78% 32%, rgba(205, 214, 227, 0.45), transparent 60%),
+    radial-gradient(1.5px 1.5px at 45% 78%, rgba(205, 214, 227, 0.5), transparent 60%),
+    radial-gradient(1px 1px at 22% 88%, rgba(205, 214, 227, 0.4), transparent 60%),
+    radial-gradient(2px 2px at 68% 12%, rgba(205, 214, 227, 0.45), transparent 60%);
+
+  /* Welcome hero — wide oval crest, naturally proportioned */
+  --welcome-hero-width: 240px;
+  --welcome-hero-shape: 16px;
+  --welcome-hero-bg: #ffffff;
+  --welcome-hero-frame:
+    0 0 0 1px rgba(58, 109, 181, 0.18),
+    0 12px 32px -8px rgba(12, 26, 54, 0.18),
+    inset 0 0 0 4px rgba(255, 255, 255, 0.95);
+
+  /* Aurora — silver-frost layers, subtle */
+  --aurora-1: rgba(58, 109, 181, 0.05);
+  --aurora-2: rgba(205, 214, 227, 0.18);
+  --aurora-3: rgba(255, 255, 255, 0.55);
+}
+
+/* The header gets a 5-point star skeleton behind the logo glyph and a
+   silver-frost gradient sweep when streaming. Both are GPU-only. */
+header[data-streaming="true"]::before {
+  content: "";
+  position: absolute;
+  inset: -8px -16px;
+  background: linear-gradient(
+    100deg,
+    transparent 30%,
+    rgba(205, 214, 227, 0.45) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  animation: wingShimmer 3.6s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 0;
+  mix-blend-mode: screen;
+  border-radius: 24px;
+}
+header { position: relative; }
+header > * { position: relative; z-index: 1; }
+
+@keyframes wingShimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* Owl-wake — the signature moment.
+   Fires once after the welcome card materializes (bot-message-enter delay
+   ~0.5s). The eyes do a single slow blink. */
+.welcome-bubble .premium-prose svg.welcome-hero { /* not used; kept as anchor */
+}
+
+/* The owl-mark.svg is loaded via <img>, so we can't directly target its
+   internal <g class="eyes"> from this stylesheet. Instead we apply the
+   wake animation to the header logo container — a subtle "noticed you"
+   pulse that visually evokes the eyes opening. */
+.bot-message-enter[data-streaming],
+header > div:first-child > div:first-child {
+  /* Targeting too-fragile selectors is risky; the wake animation is on
+     the logo container via a class added in main.tsx. */
+}
+
+/* Owl-wake — fires once on mount on the logo container.
+   The img inside scales vertically (eyelid squeeze), then settles. */
+[data-logo="custom"] img {
+  animation: owlWake 0.7s ease-out 0.6s 1 both;
+  transform-origin: center 58%;
+}
+
+@keyframes owlWake {
+  0% { transform: scaleY(1); }
+  40% { transform: scaleY(0.55); }
+  60% { transform: scaleY(1); }
+  100% { transform: scaleY(1); }
+}
+
+/* Status badge — the steady "stable" state gets a faint amber halo
+   instead of the generic green, since green is not in our palette. The
+   semantic stays "ready" via the existing label text. The dot is still
+   green at the .glass-panel layer so we override here. */
+header .glass-panel .bg-green-500 {
+  background: var(--accent-emphasis) !important;
+  box-shadow: 0 0 6px rgba(229, 164, 69, 0.7) !important;
+}
+header .glass-panel .bg-blue-500 {
+  background: var(--accent) !important;
+  box-shadow: 0 0 8px rgba(58, 109, 181, 0.7) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  header[data-streaming="true"]::before { display: none; }
+  .owl-wake { animation: none; }
+}
