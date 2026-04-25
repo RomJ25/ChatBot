@@ -1,6 +1,5 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowDown,
   FileText,
   MessageCircle,
   Paperclip,
@@ -221,7 +220,6 @@ export default function ChatBot({
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
-  const [showScrollButton, setShowScrollButton] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
@@ -267,13 +265,18 @@ export default function ChatBot({
     };
   }, []);
 
+  // Tracks whether the scroll position is pinned to the bottom — used by
+  // scrollToBottom to avoid yanking the user back when they've scrolled up.
+  // No floating scroll-to-bottom button: it added visual noise and only
+  // helped a corner case (user scrolled up, missed the latest reply). The
+  // chat-scroll-mask gradient already cues "more content above"; everything
+  // else is plain wheel/touch scrolling.
   const handleScroll = useCallback(() => {
     const c = chatContainerRef.current;
     if (!c) return;
     const atBottom = c.scrollHeight - c.scrollTop - c.clientHeight < 80;
     if (atBottom !== isAtBottomRef.current) {
       isAtBottomRef.current = atBottom;
-      setShowScrollButton(!atBottom);
     }
   }, []);
 
@@ -283,12 +286,7 @@ export default function ChatBot({
     if (force || isAtBottomRef.current) {
       c.scrollTop = c.scrollHeight;
       isAtBottomRef.current = true;
-      setShowScrollButton(false);
     }
-  }, []);
-
-  const scrollToBottomSmooth = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
   // Auto-scroll-to-bottom on every state change *except* the initial render
@@ -1211,20 +1209,6 @@ export default function ChatBot({
           )}
           <div ref={messagesEndRef} className="h-2" />
         </div>
-
-        {showScrollButton && (
-          <button
-            onClick={scrollToBottomSmooth}
-            className="absolute bottom-32 right-1/2 translate-x-1/2 z-40 glass-panel rounded-full p-2.5 shadow-[0_10px_30px_rgba(15,23,42,0.1)] hover:scale-105 active:scale-95 transition-all duration-300"
-            style={{ animation: "slideUpFade 0.3s ease-out" }}
-            aria-label="גלול למטה"
-          >
-            <ArrowDown
-              className="w-5 h-5 icon-glow"
-              style={{ color: "var(--accent)" }}
-            />
-          </button>
-        )}
 
         {isDragging && (
           <div
