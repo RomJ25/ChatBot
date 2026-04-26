@@ -16,3 +16,13 @@
 *.ttf binary
 *.otf binary
 *.exe binary
+*.exe -text -diff
+*.dll binary
+*.dll -text -diff
+*.node binary
+*.node -text -diff
+
+# Vendored pnpm store: many gzipped tarballs. Mark binary so Git skips
+# line-ending normalization, text diffs, and 3-way merge attempts.
+.pnpm-store/** binary
+.pnpm-store/** -text -diff -merge

@@ -123,6 +123,81 @@ async function checkDeVincho(): Promise<void> {
 if (!want || want === "sniro") await checkSniro();
 if (!want || want === "de-vincho") await checkDeVincho();
 
+// LLM reachability probe — verifies the configured gateway is alive before
+// the user starts a chat session. Reads each app's .env.local; if a base
+// URL is set, POSTs a 1-token request and classifies the response.
+async function probeLlm(slug: string): Promise<void> {
+  const envPath = path.join(repoRoot, "apps", slug, ".env.local");
+  const envFile = Bun.file(envPath);
+  if (!(await envFile.exists())) {
+    push("info", slug, ".env.local missing — run `pnpm bootstrap` to create it");
+    return;
+  }
+  const text = await envFile.text();
+  const get = (key: string): string => {
+    const m = text.match(new RegExp(`^\\s*${key}\\s*=\\s*(.+)$`, "m"));
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : "";
+  };
+  const baseUrl = get("VITE_LLM_BASE_URL");
+  const apiKey = get("VITE_LLM_API_KEY");
+  const model = get("VITE_LLM_MODEL");
+  if (!baseUrl || !model) {
+    push("info", slug, "no LLM configured in .env.local — UI will show config-hint screen");
+    return;
+  }
+  if (baseUrl.startsWith("/")) {
+    // Relative URL means the app uses Vite's dev/preview proxy. The proxy
+    // is only live when `pnpm dev:<slug>` or `pnpm preview:<slug>` is
+    // running, so we can't probe from a one-shot script — skip gracefully.
+    push(
+      "info",
+      slug,
+      `LLM_BASE_URL is relative (${baseUrl}) — proxied at runtime, no probe possible from doctor`,
+    );
+    return;
+  }
+  const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 5000);
+    const res = await fetch(url, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: {
+        "content-type": "application/json",
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "ping" }],
+      }),
+    });
+    clearTimeout(timer);
+    if (res.ok) {
+      push("info", slug, `LLM reachable: ${baseUrl} (model: ${model})`);
+    } else if (res.status === 401 || res.status === 403) {
+      push("error", slug, `LLM auth failed (${res.status}): check VITE_LLM_API_KEY`);
+    } else if (res.status === 404) {
+      push("error", slug, `LLM 404 at ${url}: check VITE_LLM_BASE_URL and model name`);
+    } else if (res.status >= 500) {
+      push("warn", slug, `LLM gateway error (${res.status}): may be temporary`);
+    } else {
+      push("warn", slug, `LLM responded ${res.status}: check config`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("aborted")) {
+      push("error", slug, `LLM probe timed out (5s) at ${baseUrl} — gateway unreachable`);
+    } else {
+      push("error", slug, `LLM unreachable at ${baseUrl}: ${msg}`);
+    }
+  }
+}
+
+if (!want || want === "sniro") await probeLlm("sniro");
+if (!want || want === "de-vincho") await probeLlm("de-vincho");
+
 const errs = findings.filter((f) => f.level === "error");
 const warns = findings.filter((f) => f.level === "warn");
 const infos = findings.filter((f) => f.level === "info");

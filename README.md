@@ -19,17 +19,51 @@ The two skins are driven entirely by per-app `theme.css` — no fork of the core
 
 The app has no native dependencies — `pnpm install` is pure JS/TS.
 
-## Quickstart (any OS)
+## Quickstart (any OS, online)
 
 ```bash
 corepack enable          # one-time, gives you the right pnpm version
-pnpm install
-pnpm bootstrap           # creates apps/<slug>/.env.local from .env.example
+pnpm install             # also auto-creates apps/<slug>/.env.local via the postinstall hook
 pnpm dev:sniro           # opens http://localhost:5173
 pnpm dev:de-vincho       # opens http://localhost:5174
 ```
 
-`pnpm bootstrap` is idempotent (won't clobber an existing `.env.local`) and prints the next steps. With no API key configured the apps still load and show a "configuration required" state instead of crashing — useful for verifying the UI before wiring an LLM.
+`pnpm install` runs `scripts/setup.mjs --quiet` as a `postinstall` hook so the two `.env.local` files are created automatically (idempotent — won't clobber existing files). With no API key configured the apps still load and show a "configuration required" state instead of crashing — useful for verifying the UI before wiring an LLM.
+
+## Offline / air-gapped install (Windows team, no internet)
+
+This repo vendors pnpm's content-addressable package store, so a fresh `git clone` ships every npm dependency needed to build and run. **No network calls during install.**
+
+```bash
+git clone <internal-repo>/Sniro.git
+cd Sniro
+pnpm install --offline --frozen-lockfile    # reads tarballs from ./.pnpm-store
+# Edit apps/sniro/.env.local: set VITE_LLM_BASE_URL, VITE_LLM_API_KEY,
+# and VITE_LLM_MODEL to your team's internal gateway values.
+pnpm dev:sniro
+```
+
+The `.npmrc` at repo root pins `store-dir=./.pnpm-store` and `prefer-offline=true`, so pnpm always uses the bundled store rather than the public registry. The store is marked binary in `.gitattributes` so Git doesn't try to delta-compress 8000+ gzipped tarballs.
+
+Or skip pnpm entirely on Windows: build the `.exe` once on a connected machine (`pnpm bundle:sniro` → `out/sniro.exe`), commit it, and air-gapped users double-click. The launcher's first-run setup form prompts for the gateway URL.
+
+### Refreshing the vendored store
+
+When `pnpm-lock.yaml` changes (new dep added, version bump), regenerate the store on a machine **with internet**:
+
+```bash
+pnpm refresh-store        # one command — see scripts/refresh-vendored-store.mjs
+git add .pnpm-store pnpm-lock.yaml
+git commit -m "refresh vendored pnpm store"
+```
+
+The script:
+1. Cleans `node_modules` and `.pnpm-store/`.
+2. Runs `pnpm install --frozen-lockfile` to populate the store with **host-platform** binaries (esbuild, rollup).
+3. Side-loads **Windows x64 + arm64** binaries via a throwaway temp project (pnpm 10's `supportedArchitectures` config does not reliably populate the store with foreign-platform optional deps; this is the known workaround).
+4. Verifies `pnpm install --offline --frozen-lockfile` succeeds and both apps build before declaring success.
+
+To add other deploy platforms (e.g. Linux), edit `FOREIGN_PLATFORM_DEPS` in `scripts/refresh-vendored-store.mjs`.
 
 ### Picking a model provider
 
@@ -87,13 +121,14 @@ Run `pnpm prompt:sniro` / `pnpm prompt:de-vincho` after edits to preview the com
 
 | Command | What it does |
 | --- | --- |
-| `pnpm bootstrap` | one-time first-run — creates `apps/<slug>/.env.local` from `.env.example` |
+| `pnpm bootstrap` | (also runs as a `postinstall` hook) — creates `apps/<slug>/.env.local` from `.env.example` |
 | `pnpm dev:<slug>` | Vite dev server (HMR) for sniro or de-vincho |
 | `pnpm build:<slug>` | typecheck + build to `apps/<slug>/dist/` |
 | `pnpm preview:<slug>` | serve the built dist locally |
 | `pnpm typecheck` | typecheck every package |
 | `pnpm prompt:<slug>` | print the composed system prompt + welcome (with token/char counts) |
-| `pnpm run doctor` | content health check — flags placeholders, duplicate IDs, missing descriptions, empty topics |
+| `pnpm run doctor` | content health check + LLM gateway reachability probe — flags placeholders, duplicate IDs, missing descriptions, empty topics, unreachable gateways |
+| `pnpm refresh-store` | regenerate `.pnpm-store/` with multi-platform binaries (run when `pnpm-lock.yaml` changes) |
 | `pnpm bundle:<slug>` | build a standalone Windows `.exe` → `out/<slug>.exe` |
 | `pnpm bundle:all` | both `.exe`s |
 | `pnpm extract -- <slug> <target>` | produce a workspace-free copy of one app for source handoff |
@@ -133,5 +168,15 @@ Run `pnpm prompt:sniro` / `pnpm prompt:de-vincho` after edits to preview the com
 │   ├── doctor.ts             # pnpm run doctor
 │   ├── setup.mjs             # pnpm bootstrap
 │   └── extract.mjs           # standalone-source export
-└── out/                      # built .exe files (gitignored)
+├── .pnpm-store/              # vendored npm tarball cache (committed, ~130 MB)
+│                             # → enables `pnpm install --offline` on air-gapped machines
+└── out/                      # built .exe files (gitignored by default; commit per-deployment if shipping prebuilt binaries)
 ```
+
+## Troubleshooting
+
+- **Windows + corepack denied**: run as Administrator, or fall back to `npm install -g pnpm@10.14.0`.
+- **`pnpm install --offline` fails with "missing package"**: the `.pnpm-store/` was populated on a different OS than the deploy machine. Re-run the [Refreshing the vendored store](#refreshing-the-vendored-store) workflow on the deploy platform.
+- **`pnpm install --offline` says "lockfile out of sync"**: someone bumped `package.json` without re-fetching. Either revert the bump or refresh the store.
+- **Behind a corporate proxy**: set `HTTPS_PROXY` before any `pnpm install` on a connected machine — irrelevant on offline machines, which never call out.
+- **Port 5173 already in use**: set `VITE_PORT=5180` in the relevant `.env.local`.

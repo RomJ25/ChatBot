@@ -8,6 +8,10 @@ dist
 *.tsbuildinfo
 .playwright-mcp
 
+# .pnpm-store/ is INTENTIONALLY tracked — see .npmrc. It vendors pnpm's
+# content-addressable tarball cache so `pnpm install --offline` works on
+# air-gapped machines after a fresh clone.
+
 # Local dev screenshots
 /*.png
 
