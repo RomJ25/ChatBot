@@ -12,6 +12,12 @@ import {
 } from "lucide-react";
 import { Markdown } from "./components/Markdown";
 import { createDefaultClient, LLMError, type ChatMessage } from "./llm";
+import {
+  buildWindowedMessages,
+  computeSummary,
+  isSummaryFresh,
+  type SummaryEntry,
+} from "./history";
 
 export type ChatSuggestion = { label: string; prompt: string };
 
@@ -80,6 +86,10 @@ type Message = {
   isWelcome?: boolean;
   /** When true, render the first paragraph of this bubble with a drop-cap. */
   dropCap?: boolean;
+  /** When true, the bubble represents an actionable status (e.g., the
+   * NOT_CONFIGURED instructions). Renders with role="status" so screen
+   * readers announce its appearance. */
+  isStatus?: boolean;
 };
 
 const NOT_CONFIGURED_CONTENT = `⚙️ **לא הוגדרו פרטי ה-LLM.**
@@ -161,13 +171,16 @@ function longestBacktickFence(content: string): string {
 let nextMessageId = 2;
 const mkId = () => ++nextMessageId;
 
-// Strip Unicode bidirectional control characters from user input before it
-// reaches the LLM. These characters (U+202A–U+202E, U+2066–U+2069) are
-// invisible but tokenize, and pasted-in payloads can use them to confuse
-// instruction parsing or smuggle prompt injections that read benign in the UI
-// but malicious to the model. See: Trojan Source (CVE-2021-42574),
-// multilingual jailbreak research 2024–2025.
-const BIDI_CONTROLS_RE = /[\u202A-\u202E\u2066-\u2069]/g;
+// Strip invisible Unicode control + tag characters from user input before it
+// reaches the LLM. Two ranges covered:
+//   1. Bidi controls (U+202A–U+202E, U+2066–U+2069) — Trojan Source
+//      (CVE-2021-42574). Invisible reordering glyphs that can make a payload
+//      read benign in the UI while parsing differently to a tokenizer.
+//   2. Unicode tags (U+E0000–U+E007F) — 2024-era LLM jailbreak vector.
+//      Completely invisible in rendered text but tokenized by some models
+//      and used to smuggle hidden instructions through chat interfaces.
+// The /u flag is required because U+E0000–U+E007F is supplementary-plane.
+const BIDI_CONTROLS_RE = /[\u202A-\u202E\u2066-\u2069\u{E0000}-\u{E007F}]/gu;
 const stripBidiControls = (s: string): string =>
   s.replace(BIDI_CONTROLS_RE, "");
 
@@ -220,6 +233,9 @@ export default function ChatBot({
       // configuration is missing we surface the config-hint message instead.
       heroUrl: client ? welcomeHeroUrl : undefined,
       dropCap: client ? dropCap : false,
+      // When the LLM is unconfigured the welcome bubble carries actionable
+      // setup instructions; flag it so the renderer can use role="status".
+      isStatus: !client,
     },
   ]);
   const [inputValue, setInputValue] = useState("");
@@ -242,6 +258,26 @@ export default function ChatBot({
   const rafRef = useRef<number | null>(null);
   const lastMouseRaf = useRef<number | null>(null);
   const abortedRef = useRef(false);
+  // Live streaming bubble lives outside the `messages` array: per-token
+  // updates would otherwise re-spread the whole array on every rAF tick.
+  // The placeholder ref holds the bubble's stable metadata (id, timestamp);
+  // the text ref accumulates streamed chars; the tick state forces only
+  // the streaming-bubble subtree to re-render when content advances.
+  const streamingPlaceholderRef = useRef<Message | null>(null);
+  const streamingTextRef = useRef("");
+  const [streamingTick, setStreamingTick] = useState(0);
+  const bumpStreamingTick = useCallback(
+    () => setStreamingTick((t) => (t + 1) & 0x7fffffff),
+    [],
+  );
+
+  // History windowing: past HISTORY_THRESHOLD messages, replace the oldest
+  // prefix with a compressed summary message instead of re-sending the whole
+  // dialogue every turn. The summary is computed lazily on idle; until it
+  // lands, the request silently truncates to the recent window.
+  const summaryRef = useRef<SummaryEntry | null>(null);
+  const summaryFailedRef = useRef(false);
+  const summaryInFlightRef = useRef(false);
   // Quill cadence: timestamp of the next allowed commit. The drain loop is
   // a single rAF tick that re-arms itself; advancing this ref pauses the
   // drain without burning frames in a busy loop.
@@ -249,6 +285,12 @@ export default function ChatBot({
   // Tracks whether the drain loop has commit anything yet — used to gate
   // the descend-from-above signature animation to fire exactly once.
   const quillFirstCommitRef = useRef(true);
+  // Catch-up mode: when the producer outruns the artistic per-char delay
+  // table, the buffer would otherwise accumulate and the user would stare
+  // at a slow typewriter long after the LLM is producing fast. Above 200
+  // pending chars we switch to grouped commits at a flat delay until the
+  // backlog drops below 80, then resume the artistic cadence.
+  const quillCatchupRef = useRef(false);
 
   // Mouse-reactive spotlight: write to a CSS variable directly so we don't
   // re-render the React tree on every frame. Reads `--mouse-x` / `--mouse-y`
@@ -304,9 +346,11 @@ export default function ChatBot({
   // possible first impression. Counting messages is robust against
   // StrictMode double-mounts (where a one-shot ref would still fire twice).
   useEffect(() => {
-    if (messages.length <= 1 && !isTyping) return;
+    if (messages.length <= 1 && !isTyping && streamingTick === 0) return;
     scrollToBottom();
-  }, [messages, isTyping, scrollToBottom]);
+    // streamingTick bumps on every flush so the bottom-pin tracks the live
+    // bubble even while the committed `messages` array is unchanged.
+  }, [messages, isTyping, streamingTick, scrollToBottom]);
 
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
@@ -335,10 +379,25 @@ export default function ChatBot({
   };
 
   const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInputValue(e.target.value);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = "auto";
-      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 150)}px`;
+    const value = e.target.value;
+    const prevValue = inputValue;
+    setInputValue(value);
+    const ta = textareaRef.current;
+    if (!ta) return;
+    // The original ran two reflows per keystroke (style="auto" then read
+    // scrollHeight then set scrollHeight). Reading scrollHeight directly
+    // tells us whether content overflows the current visual height —
+    // when it doesn't, no layout change is needed and we skip both
+    // reflows. When it does (or content shrunk / a newline arrived),
+    // run the full auto/scrollHeight cycle to recompute. Net: one
+    // layout per keystroke instead of two-plus.
+    const newlineAdded =
+      (value.match(/\n/g)?.length ?? 0) > (prevValue.match(/\n/g)?.length ?? 0);
+    const shrunk = value.length < prevValue.length;
+    const overflowed = ta.scrollHeight > ta.clientHeight + 1;
+    if (newlineAdded || shrunk || overflowed) {
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(ta.scrollHeight, 150)}px`;
     }
   };
 
@@ -365,8 +424,10 @@ export default function ChatBot({
     }
   };
 
-  // Frame-cadence: dump the entire pending buffer into state once per rAF.
-  // This is the historic behaviour and what sniro keeps using.
+  // Frame-cadence: dump the entire pending buffer into the streaming-text
+  // ref once per rAF. The tick bump re-renders only the streaming-bubble
+  // subtree; the committed `messages` array stays untouched until the
+  // stream completes.
   const scheduleFrameFlush = () => {
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
@@ -375,11 +436,8 @@ export default function ChatBot({
       const id = streamingIdRef.current;
       bufferRef.current = "";
       if (!chunk || id === null) return;
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === id ? { ...m, content: m.content + chunk } : m,
-        ),
-      );
+      streamingTextRef.current += chunk;
+      bumpStreamingTick();
     });
   };
 
@@ -420,8 +478,28 @@ export default function ChatBot({
       if (id === null) return;
       const buf = bufferRef.current;
       if (buf.length === 0) return; // drained — wait for more producer input
+      // Hysteresis on catch-up: enter at >200, exit at <80. Avoids
+      // ping-ponging at the threshold on bursty producers.
+      if (!quillCatchupRef.current && buf.length > 200) {
+        quillCatchupRef.current = true;
+      } else if (quillCatchupRef.current && buf.length < 80) {
+        quillCatchupRef.current = false;
+      }
       const t = performance.now();
       if (t < quillNextCommitAtRef.current) {
+        rafRef.current = requestAnimationFrame(tick);
+        return;
+      }
+      if (quillCatchupRef.current) {
+        // Catch-up: commit 4 chars at flat 12ms. Still feels animated, but
+        // matches a fast LLM instead of stalling artistically behind it.
+        const take = Math.min(4, buf.length);
+        const chunk = buf.slice(0, take);
+        bufferRef.current = buf.slice(take);
+        quillNextCommitAtRef.current = t + 12;
+        if (quillFirstCommitRef.current) quillFirstCommitRef.current = false;
+        streamingTextRef.current += chunk;
+        bumpStreamingTick();
         rafRef.current = requestAnimationFrame(tick);
         return;
       }
@@ -433,11 +511,8 @@ export default function ChatBot({
       // to play it once on first visibility.
       const isFirst = quillFirstCommitRef.current;
       if (isFirst) quillFirstCommitRef.current = false;
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === id ? { ...m, content: m.content + ch } : m,
-        ),
-      );
+      streamingTextRef.current += ch;
+      bumpStreamingTick();
       rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
@@ -453,22 +528,22 @@ export default function ChatBot({
     }
     bufferRef.current = "";
     quillNextCommitAtRef.current = 0;
+    quillCatchupRef.current = false;
   };
 
   const ensureStreamingBubble = (): number => {
     if (streamingIdRef.current !== null) return streamingIdRef.current;
     const id = mkId();
     streamingIdRef.current = id;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id,
-        sender: "bot",
-        content: "",
-        streaming: true,
-        timestamp: now(),
-      },
-    ]);
+    streamingTextRef.current = "";
+    streamingPlaceholderRef.current = {
+      id,
+      sender: "bot",
+      content: "",
+      streaming: true,
+      timestamp: now(),
+    };
+    bumpStreamingTick();
     return id;
   };
 
@@ -507,19 +582,56 @@ export default function ChatBot({
     return out;
   };
 
+  const scheduleSummaryRefresh = () => {
+    if (!client) return;
+    if (typeof window === "undefined") return;
+    if (summaryInFlightRef.current) return;
+    if (summaryFailedRef.current) return;
+    const run = () => {
+      if (summaryInFlightRef.current || summaryFailedRef.current) return;
+      const fullNow = toLlmMessages(messagesRef.current);
+      if (isSummaryFresh(fullNow, summaryRef.current)) return;
+      summaryInFlightRef.current = true;
+      void computeSummary(client, fullNow)
+        .then((result) => {
+          if (result) summaryRef.current = result;
+          else summaryFailedRef.current = true;
+        })
+        .catch(() => {
+          summaryFailedRef.current = true;
+        })
+        .finally(() => {
+          summaryInFlightRef.current = false;
+        });
+    };
+    const ric = (window as any).requestIdleCallback;
+    if (typeof ric === "function") {
+      ric(run, { timeout: 5000 });
+    } else {
+      window.setTimeout(run, 2000);
+    }
+  };
+
   const runStream = async (historyBase: Message[]) => {
     if (!client) return;
 
-    const llmMessages = toLlmMessages(historyBase);
-    if (llmMessages.length === 0) return;
+    const fullLlmMessages = toLlmMessages(historyBase);
+    if (fullLlmMessages.length === 0) return;
+    const llmMessages = buildWindowedMessages(
+      fullLlmMessages,
+      summaryRef.current,
+    );
 
     const controller = new AbortController();
     abortRef.current = controller;
     streamingIdRef.current = null;
+    streamingPlaceholderRef.current = null;
+    streamingTextRef.current = "";
     bufferRef.current = "";
     abortedRef.current = false;
     quillNextCommitAtRef.current = 0;
     quillFirstCommitRef.current = true;
+    quillCatchupRef.current = false;
     setIsTyping(true);
     setIsStreaming(true);
 
@@ -562,62 +674,84 @@ export default function ChatBot({
         // a late flush can't re-append pending after we finalize here.
         const pending = bufferRef.current;
         cancelFlush();
-        const id = streamingIdRef.current;
         const stoppedByUser = abortedRef.current;
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== id) return m;
-            const nextContent = pending ? m.content + pending : m.content;
-            return {
-              ...m,
-              content: stoppedByUser
-                ? `${nextContent}\n\n${ABORT_MID_STREAM}`
-                : nextContent,
-              streaming: false,
-            };
-          }),
-        );
+        const placeholder = streamingPlaceholderRef.current;
+        const accumulated =
+          streamingTextRef.current + (pending ?? "");
+        const finalContent = stoppedByUser
+          ? `${accumulated}\n\n${ABORT_MID_STREAM}`
+          : accumulated;
+        if (placeholder) {
+          setMessages((prev) => [
+            ...prev,
+            { ...placeholder, content: finalContent, streaming: false },
+          ]);
+        }
+        streamingPlaceholderRef.current = null;
+        streamingTextRef.current = "";
+        bumpStreamingTick();
+        // The LLM is reachable (we just streamed from it), so any prior
+        // summary-call failure was transient — let it retry next time we
+        // need a summary.
+        summaryFailedRef.current = false;
+        scheduleSummaryRefresh();
       }
     } catch (err) {
       cancelFlush();
       const aborted =
         err instanceof LLMError && err.code === "aborted";
-      const id = streamingIdRef.current ?? ensureStreamingBubble();
+      const placeholder = streamingPlaceholderRef.current;
+      const partial = streamingTextRef.current.trim();
 
       if (aborted) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === id
-              ? {
-                  ...m,
-                  streaming: false,
-                  content: m.content || ABORT_BEFORE_STREAM,
-                }
-              : m,
-          ),
-        );
+        if (placeholder) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              ...placeholder,
+              content: partial || ABORT_BEFORE_STREAM,
+              streaming: false,
+            },
+          ]);
+        } else {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: mkId(),
+              sender: "bot",
+              content: ABORT_BEFORE_STREAM,
+              timestamp: now(),
+              excludeFromLlm: true,
+            },
+          ]);
+        }
       } else {
         const errText =
           err instanceof LLMError
             ? describeError(err)
             : `שגיאה בלתי צפויה:\n\n\`\`\`\n${String((err as any)?.message ?? err)}\n\`\`\``;
-        setMessages((prev) =>
-          prev.map((m) => {
-            if (m.id !== id) return m;
-            const partial = m.content?.trim();
-            const content = partial
-              ? `${m.content}\n\n---\n\n${errText}`
-              : errText;
-            return {
-              ...m,
-              content,
-              streaming: false,
-              error: true,
-              excludeFromLlm: true,
-            };
-          }),
-        );
+        const content = partial
+          ? `${streamingTextRef.current}\n\n---\n\n${errText}`
+          : errText;
+        const baseId = placeholder?.id ?? mkId();
+        const baseTimestamp = placeholder?.timestamp ?? now();
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: baseId,
+            sender: "bot",
+            content,
+            timestamp: baseTimestamp,
+            streaming: false,
+            error: true,
+            excludeFromLlm: true,
+          },
+        ]);
       }
+
+      streamingPlaceholderRef.current = null;
+      streamingTextRef.current = "";
+      bumpStreamingTick();
     } finally {
       setIsTyping(false);
       setIsStreaming(false);
@@ -712,13 +846,37 @@ export default function ChatBot({
       dir="rtl"
       data-cadence={effectiveCadence}
       className="min-h-dvh relative overflow-hidden font-heebo"
-      style={{ backgroundColor: "var(--bg)", color: "var(--ink)" }}
+      style={{
+        backgroundColor: "var(--bg)",
+        color: "var(--ink)",
+        paddingInlineStart: "env(safe-area-inset-left)",
+        paddingInlineEnd: "env(safe-area-inset-right)",
+      }}
     >
       <style
         dangerouslySetInnerHTML={{
           __html: `
         ::selection { background: rgba(var(--accent-rgb), 0.15); color: var(--ink); text-shadow: none; }
         .font-heebo { font-family: var(--font-body); letter-spacing: var(--display-tracking); }
+
+        /* iOS quality-of-life: kill the gray tap-flash, suppress the
+           300 ms double-tap-zoom delay on interactive elements. */
+        button, a, [role="button"], label {
+          -webkit-tap-highlight-color: transparent;
+          touch-action: manipulation;
+        }
+
+        /* Keyboard focus rings: only show on real keyboard navigation
+           (focus-visible), not on click. Accent color so the indicator
+           matches each persona. */
+        button:focus-visible, a:focus-visible, [role="button"]:focus-visible, label:focus-visible {
+          outline: 2px solid var(--accent);
+          outline-offset: 3px;
+          border-radius: 12px;
+        }
+        textarea:focus-visible, input:focus-visible {
+          outline: none;
+        }
 
         .hw-accelerate {
           will-change: transform, opacity, filter;
@@ -777,12 +935,6 @@ export default function ChatBot({
           -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
         }
 
-        .ink-settle { animation: inkSettle 0.5s var(--ease-fluid) forwards; opacity: 0; will-change: transform, filter, opacity, letter-spacing; }
-        @keyframes inkSettle {
-          0% { filter: blur(5px); opacity: 0; transform: translate3d(0, 8px, 0); color: var(--ink-soft); letter-spacing: -0.02em; }
-          100% { filter: blur(0); opacity: 1; transform: translate3d(0, 0, 0); color: var(--ink); letter-spacing: var(--display-tracking); }
-        }
-
         .specular-highlight::before {
           content: ""; position: absolute; top: 0; left: 10%; right: 10%; height: 1px;
           background: linear-gradient(90deg, transparent, rgba(255,255,255,1) 50%, transparent); opacity: 0.9; pointer-events: none; z-index: 5;
@@ -794,6 +946,16 @@ export default function ChatBot({
           border: 1px solid var(--panel-border);
           box-shadow: var(--panel-shadow);
           transition: transform 0.3s var(--ease-fluid), box-shadow 0.3s var(--ease-fluid), border-color 0.3s var(--ease-fluid); overflow: hidden;
+        }
+        /* Mobile: drop the heavy 30 px blur — mid-range Android (Snapdragon
+           765G class) recalculates this on every keystroke and frame-drops
+           20-40 %. The lighter blur preserves the glass intent without the
+           cost. The translucent background gradient still reads as glass. */
+        @media (max-width: 480px) {
+          .glass-panel {
+            backdrop-filter: blur(12px) saturate(1.2);
+            -webkit-backdrop-filter: blur(12px) saturate(1.2);
+          }
         }
         .glass-panel::after {
           content: ""; position: absolute; inset: 0;
@@ -838,10 +1000,12 @@ export default function ChatBot({
           transition: all 0.3s var(--ease-fluid); overflow: hidden; cursor: pointer;
           color: var(--ink-soft);
         }
-        .glass-chip:hover {
-          background: rgba(255, 255, 255, 0.98); transform: translate3d(0, -3px, 0) scale3d(1.02, 1.02, 1);
-          box-shadow: 0 12px 30px rgba(var(--accent-rgb), 0.08), 0 0 0 1px rgba(var(--accent-rgb), 0.2), inset 0 1px 2px rgba(255,255,255,1);
-          transition: all 0.15s var(--ease-out-quick);
+        @media (hover: hover) {
+          .glass-chip:hover {
+            background: rgba(255, 255, 255, 0.98); transform: translate3d(0, -3px, 0) scale3d(1.02, 1.02, 1);
+            box-shadow: 0 12px 30px rgba(var(--accent-rgb), 0.08), 0 0 0 1px rgba(var(--accent-rgb), 0.2), inset 0 1px 2px rgba(255,255,255,1);
+            transition: all 0.15s var(--ease-out-quick);
+          }
         }
         .glass-chip:active {
           transform: translate3d(0, -1px, 0) scale3d(0.96, 0.96, 1);
@@ -868,6 +1032,14 @@ export default function ChatBot({
           100% { transform: translate3d(0, 0, 0) scale3d(1, 1, 1) rotate(0deg); opacity: 0.5; }
         }
         .aurora-blob { position: absolute; border-radius: 50%; filter: blur(120px); animation: aurora-flow 25s infinite ease-in-out alternate; z-index: 0; pointer-events: none; will-change: transform; }
+        /* Mobile: hide the aurora layer entirely. Three 600-1000 px elements
+           with 100-120 px blur and continuous animation drop frame rate to
+           ~30 fps on mid-range Android. The wrapper has no visible bg, so
+           hiding the children leaves the page's solid --bg showing through
+           cleanly. */
+        @media (max-width: 480px) {
+          .aurora-blob { display: none; }
+        }
         .icon-glow { filter: drop-shadow(0px 4px 8px rgba(var(--accent-rgb), 0.4)); }
         .icon-glow-strong { filter: drop-shadow(0px 0px 12px rgba(var(--accent-rgb), 0.6)); }
 
@@ -888,15 +1060,21 @@ export default function ChatBot({
           50% { transform: scale3d(1.1, 1.1, 1); opacity: 1; }
         }
 
-        @keyframes caretBlink {
-          0%, 50% { opacity: 1; }
-          50.01%, 100% { opacity: 0; }
+        @keyframes caretPulse {
+          /* Smooth pulse instead of on/off blink — the markdown re-parse
+             throttle (160 ms windows during streaming) was causing a
+             stutter illusion when the old steps(2) blink happened to be
+             in its OFF half while content was queued. With a continuous
+             ramp the caret never reads as "frozen". */
+          0%, 100% { opacity: 1; transform: scaleY(1); }
+          50% { opacity: 0.45; transform: scaleY(0.92); }
         }
         .stream-caret {
           display: inline-block; width: 2px; height: 1.05em; vertical-align: -0.15em;
           margin-right: 3px; background: var(--caret-color); border-radius: 1px;
           box-shadow: var(--caret-glow);
-          animation: caretBlink 1s steps(2) infinite;
+          animation: caretPulse 1.1s var(--ease-fluid) infinite;
+          transform-origin: center;
           position: relative;
         }
         .stream-caret::after {
@@ -911,7 +1089,13 @@ export default function ChatBot({
         .send-btn-active {
           background: var(--send-btn-bg);
           box-shadow: var(--send-btn-shadow-active);
-          transition: all 0.3s var(--ease-fluid);
+          transition: transform 0.15s var(--ease-out-quick), box-shadow 0.3s var(--ease-fluid);
+        }
+        @media (hover: hover) {
+          .send-btn-active:hover {
+            transform: translate3d(0, -2px, 0) scale3d(1.04, 1.04, 1);
+            box-shadow: 0 16px 40px -10px rgba(var(--accent-rgb), 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.3);
+          }
         }
         .send-btn-active:active {
           transform: scale3d(0.9, 0.9, 1); box-shadow: 0 4px 15px -2px rgba(var(--accent-rgb), 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.2); transition: all 0.1s ease-out;
@@ -923,7 +1107,9 @@ export default function ChatBot({
           box-shadow: 0 10px 30px -5px rgba(var(--error-rgb), 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.4);
           transition: all 0.2s var(--ease-fluid);
         }
-        .stop-btn:hover { transform: scale3d(1.05, 1.05, 1); }
+        @media (hover: hover) {
+          .stop-btn:hover { transform: scale3d(1.05, 1.05, 1); }
+        }
         .stop-btn:active { transform: scale3d(0.92, 0.92, 1); }
 
         .drag-overlay { backdrop-filter: blur(12px); transition: all 0.4s var(--ease-fluid); }
@@ -1179,7 +1365,7 @@ export default function ChatBot({
           role="log"
           aria-live="polite"
           aria-busy={isStreaming}
-          className={`flex-1 overflow-y-auto mb-6 px-2 pt-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-opacity duration-500 ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
+          className={`flex-1 overflow-y-auto overscroll-contain mb-6 px-2 pt-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-opacity duration-[400ms] ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
         >
           {messages.map((msg, i) => (
             <MessageItem
@@ -1191,6 +1377,20 @@ export default function ChatBot({
               botAvatarUrl={logoUrl}
             />
           ))}
+
+          {streamingPlaceholderRef.current && (
+            <MessageItem
+              key="__streaming__"
+              msg={{
+                ...streamingPlaceholderRef.current,
+                content: streamingTextRef.current,
+              }}
+              isLatest
+              onRetry={handleRetryFrom}
+              botName={botName}
+              botAvatarUrl={logoUrl}
+            />
+          )}
 
           {isTyping && (
             <div className="flex gap-4 max-w-[85%] bot-message-enter justify-start hw-accelerate">
@@ -1270,15 +1470,18 @@ export default function ChatBot({
           </div>
         )}
 
-        <div className="relative z-20 pt-2 pb-6 px-2 hw-accelerate shrink-0">
+        <div
+          className="relative z-20 pt-2 px-2 hw-accelerate shrink-0"
+          style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}
+        >
           {suggestions.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-4">
+            <div className="flex flex-wrap gap-x-2 gap-y-3 mb-4">
               {suggestions.map((chip, idx) => (
                 <button
                   key={idx}
                   onClick={() => void handleSend(chip.prompt)}
                   disabled={isStreaming || !client}
-                  className="glass-chip px-4 py-2 rounded-full text-[13px] font-medium flex items-center gap-2 tracking-tight hw-accelerate disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="glass-chip px-4 py-2.5 rounded-full text-[13px] font-medium flex items-center gap-2 tracking-tight hw-accelerate disabled:opacity-50 disabled:cursor-not-allowed"
                   style={{ color: "var(--ink-soft)" }}
                 >
                   <MessageCircle
@@ -1315,7 +1518,7 @@ export default function ChatBot({
                   </span>
                   <button
                     onClick={() => removeFile(idx)}
-                    className="w-5 h-5 rounded-full hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors"
+                    className="w-10 h-10 rounded-full hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors"
                     style={{ color: "var(--muted)" }}
                     aria-label={`הסר ${file.name}`}
                   >
@@ -1327,7 +1530,7 @@ export default function ChatBot({
           )}
 
           <div
-            className={`glass-panel hw-accelerate rounded-[30px] p-2 flex items-end gap-2 transition-all duration-300 relative overflow-hidden bg-white/60 ${isInputFocused ? "glass-input-focused" : ""}`}
+            className={`glass-panel hw-accelerate rounded-[30px] p-2 flex items-end gap-2 transition-all duration-[400ms] relative overflow-hidden bg-white/60 ${isInputFocused ? "glass-input-focused" : ""}`}
           >
             <label
               className="paperclip-btn w-11 h-11 mb-0.5 rounded-full flex items-center justify-center bg-transparent transition-colors shrink-0 relative overflow-hidden group active:scale-90 cursor-pointer"
@@ -1358,7 +1561,7 @@ export default function ChatBot({
               onBlur={() => setIsInputFocused(false)}
               onKeyDown={handleKeyDown}
               placeholder="שאל משהו…"
-              className="flex-1 bg-transparent border-none outline-none text-[15px] font-medium px-2 py-3.5 leading-relaxed resize-none overflow-y-auto chat-textarea"
+              className="flex-1 bg-transparent border-none outline-none text-[16px] font-medium px-2 py-3.5 leading-relaxed resize-none overflow-y-auto chat-textarea"
               rows={1}
               style={{
                 maxHeight: "150px",
@@ -1478,6 +1681,7 @@ const MessageItem = memo(function MessageItem({
                   "0 20px 40px -12px rgba(var(--ink-rgb), 0.06), 0 0 0 1px rgba(var(--accent-rgb), 0.04)",
               }}
               data-dropcap={msg.dropCap ? "1" : undefined}
+              role={msg.error ? "alert" : msg.isStatus ? "status" : undefined}
             >
               <div className="absolute inset-0 bg-gradient-to-b from-white/60 to-transparent pointer-events-none rounded-[24px] rounded-tr-[8px]" />
               <div
@@ -1485,14 +1689,32 @@ const MessageItem = memo(function MessageItem({
               />
               <div className="relative z-10 pr-2">
                 {msg.heroUrl && (
-                  <img
-                    src={msg.heroUrl}
-                    alt=""
-                    className="welcome-hero"
-                    loading="eager"
-                  />
+                  <picture>
+                    {/\.jpe?g$/i.test(msg.heroUrl) && (
+                      <source
+                        srcSet={msg.heroUrl.replace(/\.jpe?g$/i, ".webp")}
+                        type="image/webp"
+                      />
+                    )}
+                    <img
+                      src={msg.heroUrl}
+                      alt=""
+                      className="welcome-hero"
+                      loading="eager"
+                      decoding="async"
+                    />
+                  </picture>
                 )}
-                <Markdown>{msg.content || " "}</Markdown>
+                {msg.error && (
+                  <span
+                    aria-hidden="true"
+                    className="error-icon"
+                    style={{ marginInlineEnd: "0.4em", fontSize: "1.05em" }}
+                  >
+                    ⚠️
+                  </span>
+                )}
+                <Markdown streaming={msg.streaming}>{msg.content || " "}</Markdown>
                 {msg.streaming && <span className="stream-caret" />}
               </div>
             </div>
@@ -1570,24 +1792,28 @@ const MessageItem = memo(function MessageItem({
   );
 });
 
+// Error copy returned WITHOUT emoji prefix. NVDA/JAWS Hebrew and VoiceOver
+// Hebrew read leading emojis aloud in English ("lock", "globe", "puzzle
+// piece") which fragments the Hebrew flow. The visible icon is rendered
+// separately as `<span aria-hidden="true">⚠️</span>` in MessageItem.
 function describeError(err: LLMError): string {
   if (err.code === "http" && err.status === 401) {
-    return `🔒 **אימות נכשל (401).**\n\nבדוק שהערך \`VITE_LLM_API_KEY\` נכון עבור הספק שבחרת.\n\n\`\`\`\n${err.message}\n\`\`\``;
+    return `**אימות נכשל (401).**\n\nבדוק שהערך \`VITE_LLM_API_KEY\` נכון עבור הספק שבחרת.\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   if (err.code === "http" && err.status === 404) {
-    return `❓ **לא נמצא (404).**\n\nככל הנראה הדגם \`VITE_LLM_MODEL\` לא קיים או ש-\`VITE_LLM_BASE_URL\` שגוי.\n\n\`\`\`\n${err.message}\n\`\`\``;
+    return `**לא נמצא (404).**\n\nככל הנראה הדגם \`VITE_LLM_MODEL\` לא קיים או ש-\`VITE_LLM_BASE_URL\` שגוי.\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   if (err.code === "http" && err.status === 429) {
-    return `⏳ **חרגת ממגבלת הקצב (429).**\n\nחכה רגע ונסה שוב, או החלף ספק/דגם.\n\n\`\`\`\n${err.message}\n\`\`\``;
+    return `**חרגת ממגבלת הקצב (429).**\n\nחכה רגע ונסה שוב, או החלף ספק/דגם.\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   if (err.code === "http") {
-    return `⚠️ **שגיאת HTTP ${err.status ?? ""}.**\n\n\`\`\`\n${err.message}\n\`\`\``;
+    return `**שגיאת HTTP ${err.status ?? ""}.**\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   if (err.code === "network") {
-    return `🌐 **שגיאת רשת.**\n\nייתכן שחסרות כותרות CORS בנקודת הקצה. שקול להשתמש ב-proxy של Vite על ידי הגדרת \`LLM_UPSTREAM\` ב-\`.env.local\` ושימוש ב-\`VITE_LLM_BASE_URL=/api/llm\`.\n\n\`\`\`\n${err.message}\n\`\`\``;
+    return `**שגיאת רשת.**\n\nייתכן שחסרות כותרות CORS בנקודת הקצה. שקול להשתמש ב-proxy של Vite על ידי הגדרת \`LLM_UPSTREAM\` ב-\`.env.local\` ושימוש ב-\`VITE_LLM_BASE_URL=/api/llm\`.\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   if (err.code === "parse") {
-    return `🧩 **לא הצלחתי לפענח את תשובת השרת.**\n\n\`\`\`\n${err.message}\n\`\`\``;
+    return `**לא הצלחתי לפענח את תשובת השרת.**\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   return `שגיאה:\n\n\`\`\`\n${err.message}\n\`\`\``;
 }

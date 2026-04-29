@@ -1,4 +1,4 @@
-import { ChatClient, ChatMessage, LLMError, StreamOpts } from "./types";
+import { ChatClient, ChatMessage, CompleteOpts, LLMError, StreamOpts } from "./types";
 
 export type OpenAICompatConfig = {
   baseUrl: string;
@@ -25,6 +25,10 @@ export class OpenAICompatClient implements ChatClient {
     const h: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
+      // Refuse compression on the SSE body. Gzip + chunked streaming lets
+      // some intermediate proxies buffer the response until EOF, which
+      // defeats the live-token UX. Has no cost for typical short replies.
+      "Accept-Encoding": "identity",
     };
     if (this.cfg.apiKey) h.Authorization = `Bearer ${this.cfg.apiKey}`;
     if (this.cfg.extraHeaders) Object.assign(h, this.cfg.extraHeaders);
@@ -146,6 +150,68 @@ export class OpenAICompatClient implements ChatClient {
         /* ignore */
       }
     }
+  }
+
+  async complete(
+    messages: ChatMessage[],
+    { signal, maxTokens }: CompleteOpts,
+  ): Promise<string> {
+    const payload: Record<string, unknown> = {
+      model: this.cfg.model,
+      stream: false,
+      messages: this.cfg.systemPrompt
+        ? [
+            { role: "system", content: this.cfg.systemPrompt } as ChatMessage,
+            ...messages,
+          ]
+        : messages,
+    };
+    if (typeof this.cfg.temperature === "number") {
+      payload.temperature = this.cfg.temperature;
+    }
+    if (typeof maxTokens === "number") payload.max_tokens = maxTokens;
+
+    let res: Response;
+    try {
+      res = await fetch(this.endpoint(), {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(payload),
+        signal,
+      });
+    } catch (e: any) {
+      if (e?.name === "AbortError")
+        throw new LLMError("aborted", "aborted");
+      throw new LLMError(
+        `שגיאת רשת: ${e?.message ?? "לא ידוע"}`,
+        "network",
+      );
+    }
+
+    if (!res.ok) {
+      const bodyText = await res.text().catch(() => "");
+      const snippet = bodyText ? `: ${scrubSecrets(bodyText).slice(0, 300)}` : "";
+      throw new LLMError(
+        `HTTP ${res.status} ${res.statusText}${snippet}`,
+        "http",
+        res.status,
+      );
+    }
+
+    let json: any;
+    try {
+      json = await res.json();
+    } catch (e: any) {
+      throw new LLMError(
+        `תשובת JSON לא תקינה: ${e?.message ?? "לא ידוע"}`,
+        "parse",
+      );
+    }
+    const raw =
+      json?.choices?.[0]?.message?.content ??
+      json?.choices?.[0]?.text ??
+      "";
+    return coerceContent(raw);
   }
 }
 

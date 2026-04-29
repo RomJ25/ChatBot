@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main, init]
+  pull_request:
+    branches: [main, init]
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build sniro
+        run: pnpm build:sniro
+
+      - name: Build de-vincho
+        run: pnpm build:de-vincho
+
+  # Offline-install verification: catches regressions in the vendored
+  # ./.pnpm-store. If a dep gets bumped without re-running
+  # `pnpm refresh-store`, the air-gapped Windows workflow would silently
+  # break — this job fails first so we know.
+  offline-install:
+    name: offline install + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # No `cache: pnpm` — we want pnpm to read only from the
+          # vendored ./.pnpm-store, not from any GitHub Actions cache.
+
+      - name: Install (offline, frozen)
+        run: pnpm install --offline --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build sniro (offline-resolved deps)
+        run: pnpm build:sniro
+
+      - name: Build de-vincho (offline-resolved deps)
+        run: pnpm build:de-vincho
+
+      - name: Guard against external CDN imports
+        # Catches accidentally introducing `import "https://..."`,
+        # `<script src="https://...">`, or `@import url(https://...)` —
+        # all of which would break the air-gapped story silently.
+        run: |
+          set -e
+          rg -nP '(?:from\s+|import\s+|<script\s+src=|<link\s+href=|@import\s+url\()\s*["'\'']https?://' \
+             apps/ packages/chatbot-core/src/ \
+             --glob '!*.md' \
+             --glob '!**/dist/**' \
+             --glob '!**/node_modules/**' && {
+            echo "::error::External CDN reference found — breaks offline install. Use a local asset or a vendored package instead."
+            exit 1
+          } || echo "✓ No external CDN references in app/core source."

@@ -9,8 +9,20 @@ export type StreamOpts = {
   signal: AbortSignal;
 };
 
+export type CompleteOpts = {
+  signal?: AbortSignal;
+  /** Max tokens; some providers require this for non-streaming completions. */
+  maxTokens?: number;
+};
+
 export interface ChatClient {
   stream(messages: ChatMessage[], opts: StreamOpts): AsyncIterable<string>;
+  /**
+   * Non-streaming completion. Used for background tasks like history
+   * summarization where we need the whole reply at once and don't want
+   * to feed the live UI.
+   */
+  complete(messages: ChatMessage[], opts: CompleteOpts): Promise<string>;
 }
 
 export type LLMErrorCode =

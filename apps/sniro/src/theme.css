@@ -13,9 +13,9 @@
   --surface-soft: rgba(247, 251, 255, 0.82);
   --ink: #0c1a36;
   --ink-soft: #2f4569;
-  --muted: #6f829c;
+  --muted: #5b6e89;
   --ink-rgb: 12, 26, 54;
-  --muted-rgb: 111, 130, 156;
+  --muted-rgb: 91, 110, 137;
 
   /* Accent system — pulled from the ribbon and wing of the unit crest */
   --accent: #3a6db5;            /* ribbon blue */
@@ -23,6 +23,10 @@
   --accent-strong: #1f4a86;
   --accent-emphasis: #e5a445;   /* warm amber, runway-light for active states */
   --accent-precious: #cdd6e3;   /* silver wing */
+  /* Markdown link color — overrides core's amber default which fails WCAG (2.86:1)
+     against the pale frosted-blue ground. Picks up the existing --accent-strong
+     hue so links read as a deeper sibling of the ribbon-blue accent. 7.91:1. */
+  --accent-rare: #1f4a86;
   --accent-rgb: 58, 109, 181;
   --accent-soft-rgb: 110, 155, 217;
 

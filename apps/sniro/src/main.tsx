@@ -1,8 +1,8 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+// Critical weights only: 400 for paragraph text, 700 for bold/headlines.
+// Other weights load after first paint to avoid blocking the initial render.
 import "@fontsource/heebo/400.css";
-import "@fontsource/heebo/500.css";
-import "@fontsource/heebo/600.css";
 import "@fontsource/heebo/700.css";
 import "@sniro/chatbot-core/index.css";
 import "./theme.css";
@@ -35,3 +35,18 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     />
   </React.StrictMode>,
 );
+
+// Defer secondary weights until after first paint. font-display: swap
+// (shipped by @fontsource) keeps text visible against system fallback while
+// these resolve.
+if (typeof window !== "undefined") {
+  const loadDeferred = () => {
+    void import("@fontsource/heebo/500.css");
+    void import("@fontsource/heebo/600.css");
+  };
+  if ("requestIdleCallback" in window) {
+    (window as any).requestIdleCallback(loadDeferred, { timeout: 2000 });
+  } else {
+    setTimeout(loadDeferred, 0);
+  }
+}

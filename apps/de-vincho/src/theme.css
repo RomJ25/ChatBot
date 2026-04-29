@@ -20,9 +20,9 @@
   --surface-soft: rgba(248, 235, 200, 0.78);
   --ink: #3a2818;            /* iron-gall walnut */
   --ink-soft: #5b3f28;
-  --muted: #8b6e4a;
+  --muted: #6d5440;
   --ink-rgb: 58, 40, 24;
-  --muted-rgb: 139, 110, 74;
+  --muted-rgb: 109, 84, 64;
 
   /* Accent system — copper for chrome, rubrication for emphasis,
      lapis for links (unused yet), gold for hover */
@@ -31,6 +31,10 @@
   --accent-strong: #8c4a1e;
   --accent-emphasis: #a83624;   /* rubrication red */
   --accent-precious: #c9a55a;   /* gold leaf */
+  /* Markdown link color — overrides core's amber default which fails WCAG (2.66:1)
+     against the aged-vellum ground. A deeper iron-gall walnut tuned for legibility
+     while staying in the manuscript-ink palette. 5.50:1. */
+  --accent-rare: #8a4e1f;
   --accent-rgb: 181, 107, 58;
   --accent-soft-rgb: 212, 146, 101;
 

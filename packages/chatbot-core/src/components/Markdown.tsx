@@ -1,19 +1,77 @@
-import { memo } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 type Props = {
   children: string;
   className?: string;
+  /**
+   * When true, throttle the markdown re-parse to PARSE_INTERVAL_MS while
+   * still flushing on syntactic boundaries. Without this, every streaming
+   * token rebuilds the full markdown AST — O(n²) over the response. The
+   * caller flips this to false at stream end so the final tree always
+   * reflects the complete content.
+   */
+  streaming?: boolean;
 };
 
-// Memoize on a coarse hash so the streaming reveal doesn't re-parse the
-// entire markdown tree on every dropped character. The hash is just
-// (length, lastCharCode) — enough that any append flips it, but unchanged
-// when React re-renders for unrelated reasons. With rAF-batched flushes
-// the worst case is ~60 re-parses/sec, which is well within frame budget
-// for typical assistant-message lengths.
-function MarkdownInner({ children, className }: Props) {
+const PARSE_INTERVAL_MS = 160;
+// Flush boundaries: end-of-sentence, end-of-line, and code-fence delimiters.
+// Code fences must flush immediately so a pending fence can't get styled
+// as inline code mid-stream.
+const TERMINATOR_RE = /[.!?\n)\]]$/;
+const CODE_FENCE = "```";
+
+function MarkdownInner({ children, className, streaming }: Props) {
+  const [displayed, setDisplayed] = useState<string>(children);
+  const lastParseAtRef = useRef<number>(0);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!streaming) {
+      if (displayed !== children) {
+        setDisplayed(children);
+        lastParseAtRef.current = performance.now();
+      }
+      return;
+    }
+    if (displayed === children) return;
+
+    const now = performance.now();
+    const elapsed = now - lastParseAtRef.current;
+    const tail = children.slice(displayed.length);
+    const shouldFlush =
+      displayed === "" ||
+      elapsed >= PARSE_INTERVAL_MS ||
+      TERMINATOR_RE.test(children.slice(-1)) ||
+      tail.includes(CODE_FENCE);
+
+    if (shouldFlush) {
+      setDisplayed(children);
+      lastParseAtRef.current = now;
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      return;
+    }
+
+    if (flushTimerRef.current !== null) return;
+    const wait = Math.max(0, PARSE_INTERVAL_MS - elapsed);
+    flushTimerRef.current = setTimeout(() => {
+      flushTimerRef.current = null;
+      setDisplayed(children);
+      lastParseAtRef.current = performance.now();
+    }, wait);
+
+    return () => {
+      if (flushTimerRef.current !== null) {
+        clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+    };
+  }, [children, streaming, displayed]);
+
   return (
     <div className={`premium-prose text-ink ${className ?? ""}`}>
       <ReactMarkdown
@@ -151,18 +209,16 @@ function MarkdownInner({ children, className }: Props) {
           },
         }}
       >
-        {children}
+        {displayed}
       </ReactMarkdown>
     </div>
   );
 }
 
 export const Markdown = memo(MarkdownInner, (prev, next) => {
-  // Skip re-render when only the React parent re-rendered with the same
-  // string content. During streaming this saves ~50% of markdown re-parses
-  // when the buffer drain commits a char that doesn't change props identity
-  // (parent state still changed, but our string didn't).
   return (
-    prev.children === next.children && prev.className === next.className
+    prev.children === next.children &&
+    prev.className === next.className &&
+    prev.streaming === next.streaming
   );
 });

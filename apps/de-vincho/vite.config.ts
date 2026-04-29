@@ -20,6 +20,18 @@ export default defineConfig(({ mode }) => {
               // server-to-server call.
               proxyReq.removeHeader("origin");
               proxyReq.removeHeader("referer");
+              // Force identity encoding so the upstream cannot gzip the SSE
+              // body — gzip and chunked-streaming together let some proxies
+              // buffer the whole response. Defense-in-depth for whatever
+              // production fronting layer eventually sits in front of this.
+              proxyReq.setHeader("accept-encoding", "identity");
+              proxyReq.setHeader("x-accel-buffering", "no");
+            });
+            p.on("proxyRes", (proxyRes) => {
+              // Mirror the no-buffer hint downstream and explicitly disable
+              // any cache/transform layer between us and the browser.
+              proxyRes.headers["x-accel-buffering"] = "no";
+              proxyRes.headers["cache-control"] = "no-cache, no-transform";
             });
             p.on("error", (err) => {
               console.error("[llm-proxy] upstream error:", err.message);
