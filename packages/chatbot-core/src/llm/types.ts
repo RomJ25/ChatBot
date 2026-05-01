@@ -13,6 +13,13 @@ export type CompleteOpts = {
   signal?: AbortSignal;
   /** Max tokens; some providers require this for non-streaming completions. */
   maxTokens?: number;
+  /**
+   * Skip the client's configured system prompt for this call. Use when the
+   * caller is doing a utility task (summarization, classification, etc.)
+   * that has its own system instruction and would otherwise inherit the
+   * persona's anti-extraction / anti-off-topic rules and refuse the task.
+   */
+  excludeSystemPrompt?: boolean;
 };
 
 export interface ChatClient {

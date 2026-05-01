@@ -26,5 +26,10 @@
     "prompt:sniro": "bun scripts/prompt-preview.ts sniro",
     "prompt:de-vincho": "bun scripts/prompt-preview.ts de-vincho",
     "doctor": "bun scripts/doctor.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

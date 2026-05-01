@@ -245,7 +245,6 @@ export default function ChatBot({
   const [isDragging, setIsDragging] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
 
-  const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const chatContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const spotlightRef = useRef<HTMLDivElement | null>(null);
@@ -565,6 +564,12 @@ export default function ChatBot({
     };
   }, []);
 
+  // Mirror the `messages` state into a ref so closures created during render
+  // (scheduleSummaryRefresh, handleRetryFrom) can read the latest list when
+  // they run later, without re-allocating the closure on every state change.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
   const toLlmMessages = (list: Message[]): ChatMessage[] => {
     const out: ChatMessage[] = [];
     for (const m of list) {
@@ -814,9 +819,16 @@ export default function ChatBot({
     }
   };
 
-  // Stable identity so the memoized MessageItem doesn't re-render every tick.
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
+  // Mirror runStream into a ref so handleRetryFrom (useCallback []) can invoke
+  // the latest closure without itself becoming a render-changing identity. If
+  // we put runStream in the deps directly, every render would invalidate
+  // MessageItem's memo (onRetry prop changes) and the whole message list
+  // would re-render every streaming tick. Without the ref, the captured
+  // first-render runStream goes stale on `effectiveCadence` (changes when
+  // prefers-reduced-motion toggles or the `cadence` prop changes).
+  const runStreamRef = useRef(runStream);
+  runStreamRef.current = runStream;
+
   const handleRetryFrom = useCallback((errorId: number) => {
     // sendingRef is true for the full duration of handleSend + runStream, so
     // this also blocks retry while a normal send is in flight.
@@ -832,11 +844,10 @@ export default function ChatBot({
     sendingRef.current = true;
     setMessages(kept);
     setTimeout(() => {
-      void runStream(historyForRetry).finally(() => {
+      void runStreamRef.current(historyForRetry).finally(() => {
         sendingRef.current = false;
       });
     }, 0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const showConfigHintInHeader = !client;
@@ -853,376 +864,6 @@ export default function ChatBot({
         paddingInlineEnd: "env(safe-area-inset-right)",
       }}
     >
-      <style
-        dangerouslySetInnerHTML={{
-          __html: `
-        ::selection { background: rgba(var(--accent-rgb), 0.15); color: var(--ink); text-shadow: none; }
-        .font-heebo { font-family: var(--font-body); letter-spacing: var(--display-tracking); }
-
-        /* iOS quality-of-life: kill the gray tap-flash, suppress the
-           300 ms double-tap-zoom delay on interactive elements. */
-        button, a, [role="button"], label {
-          -webkit-tap-highlight-color: transparent;
-          touch-action: manipulation;
-        }
-
-        /* Keyboard focus rings: only show on real keyboard navigation
-           (focus-visible), not on click. Accent color so the indicator
-           matches each persona. */
-        button:focus-visible, a:focus-visible, [role="button"]:focus-visible, label:focus-visible {
-          outline: 2px solid var(--accent);
-          outline-offset: 3px;
-          border-radius: 12px;
-        }
-        textarea:focus-visible, input:focus-visible {
-          outline: none;
-        }
-
-        .hw-accelerate {
-          will-change: transform, opacity, filter;
-          backface-visibility: hidden;
-          transform: translateZ(0);
-        }
-
-        .premium-prose { max-width: 65ch; color: var(--ink); }
-        .premium-prose:hover p, .premium-prose:hover ul, .premium-prose:hover ol, .premium-prose:hover blockquote { color: var(--muted); text-shadow: none; transition: color 0.4s var(--ease-fluid); }
-        .premium-prose p:hover, .premium-prose ul:hover, .premium-prose ol:hover, .premium-prose blockquote:hover { color: var(--ink); text-shadow: 0px 4px 12px rgba(var(--ink-rgb), 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85); transition: color 0.15s var(--ease-fluid); }
-        .premium-prose p { margin-bottom: 1.35em; line-height: 1.7; font-size: 15.5px; transition: color 0.4s var(--ease-fluid); }
-        .premium-prose p:last-child { margin-bottom: 0; }
-
-        .premium-prose strong {
-          font-weight: 600; color: inherit;
-          background: linear-gradient(120deg, rgba(var(--accent-rgb), 0.08) 0%, rgba(var(--accent-rgb), 0.02) 100%);
-          padding: 0.1em 0.35em; border-radius: 6px;
-          box-shadow: inset 0 -1px 0 rgba(var(--accent-rgb), 0.15), 0 2px 4px rgba(var(--accent-rgb), 0.03);
-          letter-spacing: -0.01em; margin: 0 0.1em; transition: color 0.4s var(--ease-fluid);
-        }
-        .premium-prose p:hover strong, .premium-prose ul:hover strong, .premium-prose ol:hover strong { color: var(--ink); }
-
-        .premium-prose code {
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-          font-size: 0.85em; color: var(--accent); background: rgba(var(--accent-rgb), 0.06);
-          border: 1px solid rgba(var(--accent-rgb), 0.12); padding: 0.2em 0.4em; border-radius: 6px;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.8); margin: 0 0.1em; letter-spacing: 0;
-        }
-        .premium-prose pre code {
-          color: inherit; background: transparent; border: 0; padding: 0; border-radius: 0;
-          box-shadow: none; font-size: 13px; margin: 0;
-        }
-
-        .premium-prose blockquote {
-          margin: 1.8em 0; padding: 0.8em 1.2em 0.8em 0;
-          border-right: 3px solid rgba(var(--accent-rgb), 0.4);
-          background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.03)); border-radius: 4px;
-          font-style: italic; font-size: 16px; line-height: 1.6; color: inherit; transition: all 0.4s var(--ease-fluid);
-        }
-        .premium-prose blockquote:hover { border-right-color: var(--accent); background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.06)); }
-
-        .premium-prose ul { margin-top: 1.5em; margin-bottom: 1.5em; padding-right: 1.5em; list-style: none; transition: color 0.4s var(--ease-fluid); }
-        .premium-prose li { position: relative; margin-bottom: 1em; line-height: 1.65; font-size: 15.5px; }
-        .premium-prose li:last-child { margin-bottom: 0; }
-        .premium-prose ul li::before {
-          content: ""; position: absolute; right: -1.4em; top: 0.65em; width: 6px; height: 6px;
-          border-radius: 50%; background: var(--accent);
-          box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6), inset 0 1px 2px rgba(255,255,255,0.8);
-          transition: all 0.4s var(--ease-fluid);
-        }
-        .premium-prose:hover ul:not(:hover) li::before { background: var(--muted); box-shadow: none; }
-
-        .text-ink {
-          color: var(--ink);
-          text-shadow: 0px 4px 12px rgba(var(--ink-rgb), 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85);
-          -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
-        }
-
-        .specular-highlight::before {
-          content: ""; position: absolute; top: 0; left: 10%; right: 10%; height: 1px;
-          background: linear-gradient(90deg, transparent, rgba(255,255,255,1) 50%, transparent); opacity: 0.9; pointer-events: none; z-index: 5;
-        }
-
-        .glass-panel {
-          position: relative; background: var(--panel-bg);
-          backdrop-filter: blur(30px) saturate(1.4); -webkit-backdrop-filter: blur(30px) saturate(1.4);
-          border: 1px solid var(--panel-border);
-          box-shadow: var(--panel-shadow);
-          transition: transform 0.3s var(--ease-fluid), box-shadow 0.3s var(--ease-fluid), border-color 0.3s var(--ease-fluid); overflow: hidden;
-        }
-        /* Mobile: drop the heavy 30 px blur — mid-range Android (Snapdragon
-           765G class) recalculates this on every keystroke and frame-drops
-           20-40 %. The lighter blur preserves the glass intent without the
-           cost. The translucent background gradient still reads as glass. */
-        @media (max-width: 480px) {
-          .glass-panel {
-            backdrop-filter: blur(12px) saturate(1.2);
-            -webkit-backdrop-filter: blur(12px) saturate(1.2);
-          }
-        }
-        .glass-panel::after {
-          content: ""; position: absolute; inset: 0;
-          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)'/%3E%3C/svg%3E");
-          opacity: 0.02; mix-blend-mode: overlay; pointer-events: none; z-index: 0;
-        }
-        .glass-panel > * { position: relative; z-index: 1; }
-        .glass-panel:hover {
-          box-shadow: var(--panel-shadow-hover);
-          border-color: rgba(255, 255, 255, 1); transition: all 0.15s var(--ease-out-quick);
-        }
-
-        .bot-bubble {
-          background: var(--bubble-bot-bg);
-          box-shadow: var(--bubble-bot-shadow);
-        }
-        .bot-bubble.error-bubble {
-          background: linear-gradient(135deg, rgba(254, 242, 242, 0.98) 0%, rgba(254, 226, 226, 0.7) 100%);
-          box-shadow: 0 16px 40px -8px rgba(var(--error-rgb), 0.06), inset 0px 1px 1px rgba(255, 255, 255, 1), inset 1px 0px 20px rgba(var(--error-rgb), 0.05);
-        }
-        .error-bubble .premium-prose strong {
-          background: linear-gradient(120deg, rgba(var(--error-rgb), 0.10) 0%, rgba(var(--error-rgb), 0.02) 100%);
-          box-shadow: inset 0 -1px 0 rgba(var(--error-rgb), 0.22), 0 2px 4px rgba(var(--error-rgb), 0.04);
-        }
-        .error-bubble .premium-prose code {
-          color: var(--error-deep); background: rgba(var(--error-rgb), 0.06);
-          border-color: rgba(var(--error-rgb), 0.18);
-        }
-        .error-bubble .premium-prose pre {
-          background: rgba(var(--error-rgb), 0.05); border-color: rgba(var(--error-rgb), 0.18);
-        }
-
-        .glass-input-focused {
-          background: rgba(255, 255, 255, 1) !important;
-          box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15), 0 24px 60px rgba(var(--accent-rgb), 0.1), inset 0 1px 3px rgba(255, 255, 255, 1) !important;
-          border-color: rgba(var(--accent-rgb), 0.5) !important; transform: translate3d(0, -2px, 0); transition: all 0.4s var(--ease-fluid);
-        }
-
-        .glass-chip {
-          position: relative; background: rgba(255, 255, 255, 0.7); border: 1px solid rgba(255, 255, 255, 0.7);
-          box-shadow: 0 4px 15px rgba(var(--ink-rgb), 0.02), inset 0 1px 1px rgba(255,255,255,0.9);
-          transition: all 0.3s var(--ease-fluid); overflow: hidden; cursor: pointer;
-          color: var(--ink-soft);
-        }
-        @media (hover: hover) {
-          .glass-chip:hover {
-            background: rgba(255, 255, 255, 0.98); transform: translate3d(0, -3px, 0) scale3d(1.02, 1.02, 1);
-            box-shadow: 0 12px 30px rgba(var(--accent-rgb), 0.08), 0 0 0 1px rgba(var(--accent-rgb), 0.2), inset 0 1px 2px rgba(255,255,255,1);
-            transition: all 0.15s var(--ease-out-quick);
-          }
-        }
-        .glass-chip:active {
-          transform: translate3d(0, -1px, 0) scale3d(0.96, 0.96, 1);
-          box-shadow: 0 4px 15px rgba(var(--accent-rgb), 0.05), inset 0 1px 1px rgba(255,255,255,0.9);
-          transition: all 0.1s ease-out;
-        }
-
-        .bot-message-enter { animation: glassMaterialize 0.5s var(--ease-fluid) forwards; }
-        .user-message-enter { animation: slideRightFade 0.5s var(--ease-fluid) forwards; }
-
-        @keyframes glassMaterialize {
-          0% { opacity: 0; transform: translate3d(0, 15px, 0) scale3d(0.96, 0.96, 1); filter: blur(10px); }
-          100% { opacity: 1; transform: translate3d(0, 0, 0) scale3d(1, 1, 1); filter: blur(0); }
-        }
-        @keyframes slideRightFade {
-          0% { opacity: 0; transform: translate3d(20px, 0, 0) scale3d(0.98, 0.98, 1); filter: blur(5px); }
-          100% { opacity: 1; transform: translate3d(0, 0, 0) scale3d(1, 1, 1); filter: blur(0); }
-        }
-
-        @keyframes aurora-flow {
-          0% { transform: translate3d(0, 0, 0) scale3d(1, 1, 1) rotate(0deg); opacity: 0.5; }
-          33% { transform: translate3d(5vw, -8vh, 0) scale3d(1.2, 1.2, 1) rotate(10deg); opacity: 0.7; }
-          66% { transform: translate3d(-3vw, 5vh, 0) scale3d(0.9, 0.9, 1) rotate(-5deg); opacity: 0.6; }
-          100% { transform: translate3d(0, 0, 0) scale3d(1, 1, 1) rotate(0deg); opacity: 0.5; }
-        }
-        .aurora-blob { position: absolute; border-radius: 50%; filter: blur(120px); animation: aurora-flow 25s infinite ease-in-out alternate; z-index: 0; pointer-events: none; will-change: transform; }
-        /* Mobile: hide the aurora layer entirely. Three 600-1000 px elements
-           with 100-120 px blur and continuous animation drop frame rate to
-           ~30 fps on mid-range Android. The wrapper has no visible bg, so
-           hiding the children leaves the page's solid --bg showing through
-           cleanly. */
-        @media (max-width: 480px) {
-          .aurora-blob { display: none; }
-        }
-        .icon-glow { filter: drop-shadow(0px 4px 8px rgba(var(--accent-rgb), 0.4)); }
-        .icon-glow-strong { filter: drop-shadow(0px 0px 12px rgba(var(--accent-rgb), 0.6)); }
-
-        .text-etched { text-shadow: 0px 1px 0px rgba(255, 255, 255, 0.9); }
-
-        .chat-scroll-mask {
-          mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 100%);
-          -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 100%);
-        }
-
-        @keyframes slideUpFade {
-          0% { opacity: 0; transform: translate3d(0, 10px, 0); }
-          100% { opacity: 1; transform: translate3d(0, 0, 0); }
-        }
-
-        @keyframes organicPulse {
-          0%, 100% { transform: scale3d(0.8, 0.8, 1); opacity: 0.4; }
-          50% { transform: scale3d(1.1, 1.1, 1); opacity: 1; }
-        }
-
-        @keyframes caretPulse {
-          /* Smooth pulse instead of on/off blink — the markdown re-parse
-             throttle (160 ms windows during streaming) was causing a
-             stutter illusion when the old steps(2) blink happened to be
-             in its OFF half while content was queued. With a continuous
-             ramp the caret never reads as "frozen". */
-          0%, 100% { opacity: 1; transform: scaleY(1); }
-          50% { opacity: 0.45; transform: scaleY(0.92); }
-        }
-        .stream-caret {
-          display: inline-block; width: 2px; height: 1.05em; vertical-align: -0.15em;
-          margin-right: 3px; background: var(--caret-color); border-radius: 1px;
-          box-shadow: var(--caret-glow);
-          animation: caretPulse 1.1s var(--ease-fluid) infinite;
-          transform-origin: center;
-          position: relative;
-        }
-        .stream-caret::after {
-          content: var(--caret-content);
-          position: absolute;
-          top: 50%; right: 0;
-          transform: translate(50%, -50%) rotate(-25deg);
-          font-size: 0;
-          line-height: 0;
-        }
-
-        .send-btn-active {
-          background: var(--send-btn-bg);
-          box-shadow: var(--send-btn-shadow-active);
-          transition: transform 0.15s var(--ease-out-quick), box-shadow 0.3s var(--ease-fluid);
-        }
-        @media (hover: hover) {
-          .send-btn-active:hover {
-            transform: translate3d(0, -2px, 0) scale3d(1.04, 1.04, 1);
-            box-shadow: 0 16px 40px -10px rgba(var(--accent-rgb), 0.45), inset 0 1px 2px rgba(255, 255, 255, 0.3);
-          }
-        }
-        .send-btn-active:active {
-          transform: scale3d(0.9, 0.9, 1); box-shadow: 0 4px 15px -2px rgba(var(--accent-rgb), 0.4), inset 0 1px 2px rgba(255, 255, 255, 0.2); transition: all 0.1s ease-out;
-        }
-
-        .stop-btn {
-          background: linear-gradient(135deg, var(--error) 0%, var(--error-strong) 100%);
-          color: white;
-          box-shadow: 0 10px 30px -5px rgba(var(--error-rgb), 0.5), inset 0 1px 2px rgba(255, 255, 255, 0.4);
-          transition: all 0.2s var(--ease-fluid);
-        }
-        @media (hover: hover) {
-          .stop-btn:hover { transform: scale3d(1.05, 1.05, 1); }
-        }
-        .stop-btn:active { transform: scale3d(0.92, 0.92, 1); }
-
-        .drag-overlay { backdrop-filter: blur(12px); transition: all 0.4s var(--ease-fluid); }
-
-        .glass-input textarea::-webkit-scrollbar { width: 4px; }
-        .glass-input textarea::-webkit-scrollbar-track { background: transparent; }
-        .glass-input textarea::-webkit-scrollbar-thumb { background: rgba(var(--accent-rgb), 0.2); border-radius: 4px; }
-        .glass-input textarea::-webkit-scrollbar-thumb:hover { background: rgba(var(--accent-rgb), 0.4); }
-
-        ::-webkit-scrollbar { width: 6px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: rgba(var(--muted-rgb), 0.2); border-radius: 10px; border: 2px solid var(--bg); }
-        ::-webkit-scrollbar-thumb:hover { background: rgba(var(--muted-rgb), 0.4); }
-
-        /* Welcome hero — every persona gets a fully-themed frame via tokens.
-           --welcome-hero-shape:    border-radius (default rounded rect)
-           --welcome-hero-aspect:   aspect-ratio (default auto)
-           --welcome-hero-fit:      object-fit (default contain)
-           --welcome-hero-position: object-position (default center)
-           --welcome-hero-frame:    box-shadow stack
-           --welcome-hero-bg:       backdrop tint behind image
-           --welcome-hero-width:    max-width
-        */
-        .welcome-hero {
-          display: block;
-          width: 100%;
-          max-width: var(--welcome-hero-width, 280px);
-          aspect-ratio: var(--welcome-hero-aspect, auto);
-          height: auto;
-          object-fit: var(--welcome-hero-fit, contain);
-          object-position: var(--welcome-hero-position, center);
-          margin: 0 auto 1.25rem;
-          border-radius: var(--welcome-hero-shape, 16px);
-          box-shadow: var(--welcome-hero-frame);
-          background: var(--welcome-hero-bg, rgba(255, 255, 255, 0.6));
-        }
-        @media (max-width: 480px) {
-          .welcome-hero { max-width: 200px; margin-bottom: 0.75rem; }
-        }
-
-        /* Drop cap — only active when --welcome-dropcap is set to "1". */
-        .welcome-bubble[data-dropcap="1"] .premium-prose > p:first-of-type::first-letter {
-          float: right;
-          font-family: var(--font-display);
-          font-style: var(--display-style);
-          font-weight: 600;
-          font-size: 3.6em;
-          line-height: 0.9;
-          padding: 0.05em 0 0.05em 0.18em;
-          margin-inline-start: 0.18em;
-          color: var(--accent);
-          text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
-        }
-        @media (max-width: 480px) {
-          .welcome-bubble[data-dropcap="1"] .premium-prose > p:first-of-type::first-letter {
-            font-size: 2.6em;
-          }
-        }
-
-        /* Manuscript margin rule (de-vincho only). Logical property so it
-           naturally renders on the leading edge in RTL. */
-        .chat-shell {
-          position: relative;
-        }
-        .chat-shell::before {
-          content: "";
-          position: absolute;
-          top: 8%;
-          bottom: 8%;
-          inset-inline-end: -8px;
-          width: 1px;
-          background: var(--pattern-margin-rule);
-          pointer-events: none;
-        }
-        @media (max-width: 480px) {
-          .chat-shell::before { display: none; }
-        }
-
-        .paperclip-btn:hover { background: rgba(var(--accent-rgb), 0.1); color: var(--accent); }
-        .chat-textarea::placeholder { color: var(--muted); }
-
-        /* Bot avatar (small circle next to bubble) — adopts persona accent. */
-        .bot-avatar {
-          background: rgba(255, 255, 255, 0.6);
-          border: 1px solid rgba(255, 255, 255, 0.8);
-          color: var(--accent);
-          backdrop-filter: blur(12px);
-          -webkit-backdrop-filter: blur(12px);
-          box-shadow: 0 4px 8px rgba(var(--ink-rgb), 0.06);
-        }
-
-        /* User bubble — token-driven so each persona owns its emphasis colour. */
-        .user-bubble {
-          background: var(--bubble-user-bg);
-          border: 1px solid var(--bubble-user-border);
-          box-shadow: inset 0 1px 2px rgba(255, 255, 255, 0.7),
-            0 8px 20px -5px rgba(var(--accent-rgb), 0.05);
-        }
-
-        /* Bot-bubble accent rail — runs down the leading edge of the bubble. */
-        .bubble-rail {
-          background: linear-gradient(to bottom, rgba(var(--accent-rgb), 0.6), rgba(var(--accent-rgb), 0.1));
-          box-shadow: 0 0 8px rgba(var(--accent-rgb), 0.3);
-        }
-        .error-bubble + .bubble-rail,
-        .bubble-rail.error {
-          background: linear-gradient(to bottom, rgba(var(--error-rgb), 0.6), rgba(var(--error-rgb), 0.1));
-          box-shadow: 0 0 8px rgba(var(--error-rgb), 0.3);
-        }
-      `,
-        }}
-      />
-
       <div className="absolute inset-0 overflow-hidden pointer-events-none mix-blend-multiply opacity-80">
         <div
           className="aurora-blob hw-accelerate w-[900px] h-[600px] top-[-15%] right-[-20%]"
@@ -1417,7 +1058,6 @@ export default function ChatBot({
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} className="h-2" />
         </div>
 
         {isDragging && (

@@ -60,10 +60,10 @@ git commit -m "refresh vendored pnpm store"
 The script:
 1. Cleans `node_modules` and `.pnpm-store/`.
 2. Runs `pnpm install --frozen-lockfile` to populate the store with **host-platform** binaries (esbuild, rollup).
-3. Side-loads **Windows x64 + arm64** binaries via a throwaway temp project (pnpm 10's `supportedArchitectures` config does not reliably populate the store with foreign-platform optional deps; this is the known workaround).
-4. Verifies `pnpm install --offline --frozen-lockfile` succeeds and both apps build before declaring success.
+3. Side-loads **Windows + Linux + macOS** native binaries (x64 and arm64 each) via a throwaway temp project (pnpm 10's `supportedArchitectures` config does not reliably populate the store with foreign-platform optional deps; this is the known workaround). Per-platform sanity checks fail loudly if any family didn't land.
+4. Verifies `pnpm install --offline --frozen-lockfile` succeeds and both apps build, then re-asserts the per-platform check (pnpm 10 sometimes prunes store entries that aren't in the host's resolved dep graph).
 
-To add other deploy platforms (e.g. Linux), edit `FOREIGN_PLATFORM_DEPS` in `scripts/refresh-vendored-store.mjs`.
+To drop or add a deploy platform, edit `FOREIGN_PLATFORM_DEPS` in `scripts/refresh-vendored-store.mjs` **and** the matching entry in `.npmrc`'s `supportedArchitectures` — leaving them out of sync makes offline install fail loudly on the dropped platform.
 
 ### Picking a model provider
 

@@ -83,12 +83,18 @@ export async function computeSummary(
     .join("\n\n");
 
   try {
+    // excludeSystemPrompt: the persona prompt would otherwise be prepended
+    // to this call. The persona's anti-extraction rule then tells the model
+    // to refuse to "summarize/translate/encode" the dialogue, the response
+    // comes back empty, and the summary feature silently disables for the
+    // rest of the session (computeSummary returns null → summaryFailedRef
+    // sticks → long conversations fall back to plain truncation).
     const text = await client.complete(
       [
         { role: "system", content: SUMMARY_PROMPT_HE },
         { role: "user", content: dialogue },
       ],
-      { maxTokens: 200 },
+      { maxTokens: 200, excludeSystemPrompt: true },
     );
     const trimmed = text.trim();
     if (!trimmed) return null;

@@ -154,17 +154,18 @@ export class OpenAICompatClient implements ChatClient {
 
   async complete(
     messages: ChatMessage[],
-    { signal, maxTokens }: CompleteOpts,
+    { signal, maxTokens, excludeSystemPrompt }: CompleteOpts,
   ): Promise<string> {
     const payload: Record<string, unknown> = {
       model: this.cfg.model,
       stream: false,
-      messages: this.cfg.systemPrompt
-        ? [
-            { role: "system", content: this.cfg.systemPrompt } as ChatMessage,
-            ...messages,
-          ]
-        : messages,
+      messages:
+        this.cfg.systemPrompt && !excludeSystemPrompt
+          ? [
+              { role: "system", content: this.cfg.systemPrompt } as ChatMessage,
+              ...messages,
+            ]
+          : messages,
     };
     if (typeof this.cfg.temperature === "number") {
       payload.temperature = this.cfg.temperature;

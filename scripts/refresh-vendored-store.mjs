@@ -33,23 +33,63 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 const storeDir = path.join(repoRoot, ".pnpm-store");
 
-// Native-binary packages whose Windows variants must land in the store
-// for an offline Windows install to succeed. Versions come from the
-// project's pnpm-lock.yaml and must be kept in sync with whatever the
-// lockfile resolves esbuild and rollup to.
+// Native-binary packages whose foreign-platform variants must land in the
+// store for an offline install to succeed on every platform `.npmrc`'s
+// supportedArchitectures advertises (current host + win32 + linux + darwin,
+// across x64 + arm64). Versions come from pnpm-lock.yaml and must be kept
+// in sync with whatever the lockfile resolves esbuild and rollup to.
 //
-// To extend (e.g. for Linux deploys), add the platform-specific package
-// names here — `@esbuild/linux-x64`, `@rollup/rollup-linux-x64-gnu`, etc.
+// Host-platform binaries (e.g. darwin-arm64 when prepping on a M-series Mac)
+// land via the main `pnpm install` in step [2/4] below — they're not listed
+// here. Everything else is side-loaded.
+//
+// If you drop a deploy target, prune both this list AND the matching
+// `supportedArchitectures` entry in .npmrc — leaving the .npmrc claim
+// without the matching tarballs makes offline install fail loudly on
+// the dropped platform.
 const FOREIGN_PLATFORM_DEPS = [
+  // Windows (deploy target for the .exe; also covers Windows clones)
   "@esbuild/win32-x64",
   "@esbuild/win32-arm64",
   "@rollup/rollup-win32-x64-msvc",
   "@rollup/rollup-win32-arm64-msvc",
+  // Linux x64 + arm64 (CI / server-side prep)
+  "@esbuild/linux-x64",
+  "@esbuild/linux-arm64",
+  "@rollup/rollup-linux-x64-gnu",
+  "@rollup/rollup-linux-arm64-gnu",
+  // macOS Intel (darwin-arm64 is whatever the prep host already covers; if
+  // the prep host happens to be Intel, darwin-x64 is host and darwin-arm64
+  // shows up here instead — the side-load is idempotent either way).
+  "@esbuild/darwin-x64",
+  "@esbuild/darwin-arm64",
+  "@rollup/rollup-darwin-x64",
+  "@rollup/rollup-darwin-arm64",
 ];
 
+// Cross-platform command runner.
+//
+// On Windows, `pnpm` resolves to `pnpm.cmd` (a batch shim that corepack /
+// `npm i -g pnpm` both install). Node's execFileSync cannot directly run
+// .cmd / .bat — it requires the cmd.exe shell to interpret them. Setting
+// shell:true on Windows hands the line to cmd.exe so the shim resolves.
+//
+// shell:true on Windows then means args are joined with spaces — so any
+// arg containing whitespace must be wrapped in double quotes, otherwise
+// cmd.exe splits it (e.g. a tmpdir under "C:\Users\My Name\AppData\Local\
+// Temp\..." would be parsed as multiple args). On POSIX we keep
+// shell:false; Node's execFile passes the args as a real argv array there.
 function run(cmd, args, opts = {}) {
   console.log(`\n$ ${cmd} ${args.join(" ")}${opts.cwd ? `   (in ${opts.cwd})` : ""}`);
-  execFileSync(cmd, args, { stdio: "inherit", cwd: opts.cwd ?? repoRoot });
+  const useShell = process.platform === "win32";
+  const finalArgs = useShell
+    ? args.map((a) => (/\s/.test(a) ? `"${a}"` : a))
+    : args;
+  execFileSync(cmd, finalArgs, {
+    stdio: "inherit",
+    cwd: opts.cwd ?? repoRoot,
+    shell: useShell,
+  });
 }
 
 async function countStoreEntries(pattern) {
@@ -98,7 +138,7 @@ async function main() {
   run("pnpm", ["install", "--frozen-lockfile"]);
 
   // Step 3: side-load foreign-platform binaries via throwaway project
-  console.log("\n[3/4] Side-load Windows binaries via temp project");
+  console.log("\n[3/4] Side-load foreign-platform binaries via temp project");
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "pnpm-store-refresh-"));
   try {
     const deps = {};
@@ -139,13 +179,24 @@ async function main() {
       ],
       { cwd: tmp },
     );
-    const winCount = await countStoreEntries(/win32/);
-    console.log(`  · win32 entries in store: ${winCount}`);
-    if (winCount === 0) {
-      throw new Error(
-        "side-load failed — no win32 entries landed in the project store. " +
-          "Check that --config.store-dir flag was honored.",
-      );
+    // Per-platform sanity check: each family in FOREIGN_PLATFORM_DEPS must
+    // be represented in the store, otherwise an offline install on that
+    // platform will fail. We can't assert host-platform here (those land
+    // via step [2/4]'s main install, before this side-load runs).
+    const platformChecks = [
+      { label: "win32", re: /win32/ },
+      { label: "linux", re: /linux/ },
+      { label: "darwin", re: /darwin/ },
+    ];
+    for (const { label, re } of platformChecks) {
+      const count = await countStoreEntries(re);
+      console.log(`  · ${label} entries in store: ${count}`);
+      if (count === 0) {
+        throw new Error(
+          `side-load failed — no ${label} entries landed in the project store. ` +
+            "Check that --config.store-dir flag was honored.",
+        );
+      }
     }
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
@@ -163,12 +214,22 @@ async function main() {
   run("pnpm", ["install", "--offline", "--frozen-lockfile"]);
   run("pnpm", ["-F", "sniro", "build"]);
   run("pnpm", ["-F", "de-vincho", "build"]);
-  const finalWinCount = await countStoreEntries(/win32/);
-  if (finalWinCount === 0) {
-    throw new Error(
-      "post-verification check: no win32 entries in store. The vendored " +
-        "store will not work for Windows users. Aborting before commit.",
-    );
+  // Re-check after step 4's offline install — pnpm 10 sometimes prunes
+  // store entries that aren't in the lockfile-resolved dep graph for the
+  // current host. If that pruning kicked in, the foreign-platform tarballs
+  // we side-loaded would be gone before the commit.
+  for (const { label, re } of [
+    { label: "win32", re: /win32/ },
+    { label: "linux", re: /linux/ },
+    { label: "darwin", re: /darwin/ },
+  ]) {
+    const finalCount = await countStoreEntries(re);
+    if (finalCount === 0) {
+      throw new Error(
+        `post-verification check: no ${label} entries in store. The vendored ` +
+          `store will not work for ${label} users. Aborting before commit.`,
+      );
+    }
   }
 
   console.log(

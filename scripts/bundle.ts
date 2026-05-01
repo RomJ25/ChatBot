@@ -48,8 +48,16 @@ console.log(`[bundle] pnpm -F ${slug} build`);
 // shell: true so Windows can resolve pnpm.cmd / bun.exe via PATH the same
 // way macOS / Linux find pnpm and bun. Without it, spawnSync only matches
 // bare executables on Windows and fails on .cmd shims.
+//
+// shell:true on Windows then means args are joined with spaces — so any
+// arg containing whitespace must be wrapped in double quotes, otherwise
+// cmd.exe splits it. Hits bundle:* whenever the repo lives under a path
+// with spaces (e.g. C:\Users\My Name\Sniro). On POSIX we keep shell:false
+// and Node passes args as a real argv array (no quoting needed there).
 const useShell = process.platform === "win32";
-const buildRes = spawnSync("pnpm", ["-F", slug, "build"], {
+const quoteForShell = (a: string): string =>
+  useShell && /\s/.test(a) ? `"${a}"` : a;
+const buildRes = spawnSync("pnpm", ["-F", slug, "build"].map(quoteForShell), {
   cwd: repoRoot,
   env: {
     ...process.env,
@@ -149,7 +157,7 @@ const compileRes = spawnSync(
     "--outfile",
     exePath,
     "scripts/launcher.ts",
-  ],
+  ].map(quoteForShell),
   { cwd: repoRoot, stdio: "inherit", shell: useShell },
 );
 if (compileRes.status !== 0) die(`bun build --compile failed (${compileRes.status})`);
