@@ -46,9 +46,7 @@ if (!fs.existsSync(path.join(distDir, "index.html"))) {
 }
 
 const envPath = path.join(repoRoot, "apps", slug, ".env.local");
-const env = parseEnv(
-  fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "",
-);
+const env = parseEnv(readEnvFile(envPath));
 
 const defaultPort = slug === "de-vincho" ? 5174 : 5173;
 const port = parseInt(env.VITE_PORT || String(defaultPort), 10);
@@ -94,6 +92,31 @@ const DROP_RES = new Set([
 ]);
 
 const HEADERS_TIMEOUT_MS = 120_000;
+// Chat-completion request bodies are JSON, never large. Cap at 2 MiB so a
+// runaway client (or a misbehaving SDK) can't OOM the Node process by
+// streaming gigabytes through the loopback proxy.
+const MAX_PROXY_BODY = 2 * 1024 * 1024;
+// Method allow-lists. /api/llm needs POST for completions, GET for some
+// providers' /models discovery, OPTIONS only for same-origin preflight,
+// HEAD for liveness. Static is read-only — GET/HEAD only.
+const PROXY_METHODS = new Set(["GET", "HEAD", "POST", "OPTIONS"]);
+const STATIC_METHODS = new Set(["GET", "HEAD"]);
+
+// Strict CSP — Vite production build emits no inline scripts, so 'self' is
+// enough for script-src. Inline styles are needed because React renders
+// `style="..."` attrs and some component libs inject `<style>` tags.
+// connect-src 'self' confines fetch/XHR/EventSource to same-origin, which
+// covers /api/llm. Locking base-uri, frame-ancestors, form-action prevents
+// clickjacking and base-tag rebasing if a markdown-rendered link ever leaks.
+const SECURITY_HEADERS = {
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+  "referrer-policy": "no-referrer",
+  "content-security-policy":
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "connect-src 'self'; img-src 'self' data:; font-src 'self' data:; " +
+    "base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
+};
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -114,6 +137,24 @@ const MIME = {
   ".txt": "text/plain; charset=utf-8",
   ".map": "application/json; charset=utf-8",
 };
+
+function readEnvFile(p) {
+  try {
+    return fs.readFileSync(p, "utf8");
+  } catch (err) {
+    // ENOENT is fine — running pre-bootstrap is supported (server starts in
+    // "configuration required" state). Other errors (EACCES, EISDIR, weird
+    // encoding throws on read) get a single-line warning so the operator
+    // notices, but the server still starts so they can fix the file.
+    if (err && err.code !== "ENOENT") {
+      console.error(
+        `[safe] WARNING: cannot read ${p}: ${err.code || err.message} — ` +
+          `continuing with no env (proxy disabled, default port).`,
+      );
+    }
+    return "";
+  }
+}
 
 function parseEnv(text) {
   const out = {};
@@ -169,8 +210,30 @@ async function handleProxy(req, res) {
 
   // Buffer the request body — chat completions are JSON, never large. Avoids
   // the duplex-stream juggling that web-streams-as-fetch-body needs in Node.
+  // Hard-capped at MAX_PROXY_BODY so a runaway client can't OOM us.
+  let total = 0;
   const bodyChunks = [];
-  for await (const c of req) bodyChunks.push(c);
+  try {
+    for await (const c of req) {
+      total += c.length;
+      if (total > MAX_PROXY_BODY) {
+        if (!res.headersSent) {
+          res.writeHead(413, { "content-type": "application/json" });
+          res.end(
+            JSON.stringify({
+              error: { message: "request body too large" },
+            }),
+          );
+        }
+        req.destroy();
+        return;
+      }
+      bodyChunks.push(c);
+    }
+  } catch {
+    // Client disconnected mid-upload, or stream error. Nothing to send back.
+    return;
+  }
   const body = bodyChunks.length ? Buffer.concat(bodyChunks) : undefined;
 
   // Compose two abort sources: (1) the headers timer (cleared once response
@@ -220,9 +283,34 @@ async function handleProxy(req, res) {
 }
 
 function safeJoin(base, urlPath) {
-  const decoded = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
+  let decoded;
+  try {
+    decoded = decodeURIComponent(urlPath.split("?")[0].split("#")[0]);
+  } catch {
+    // Malformed percent-encoding (e.g. lone `%`) — refuse rather than guess.
+    return null;
+  }
+  // Block null bytes (path-truncation tricks against C-string-using libs),
+  // backslashes (never legal in URL paths; on Windows path.normalize would
+  // treat them as separators and could escape the prefix check), and Windows
+  // drive letters (a request like `/C:/Windows/...` after decode could
+  // resolve to an absolute path on a Windows host).
+  if (decoded.includes(" ")) return null;
+  if (decoded.includes("\\")) return null;
+  if (/^\/?[a-zA-Z]:/.test(decoded)) return null;
+
   const resolved = path.normalize(path.join(base, decoded));
-  if (resolved !== base && !resolved.startsWith(base + path.sep)) return null;
+  const baseSep = base + path.sep;
+  // Windows path comparisons are case-insensitive; a request with a
+  // different-case prefix (e.g. `c:\users\...`) must still be checked.
+  if (process.platform === "win32") {
+    const r = resolved.toLowerCase();
+    const b = base.toLowerCase();
+    const bs = baseSep.toLowerCase();
+    if (r !== b && !r.startsWith(bs)) return null;
+  } else if (resolved !== base && !resolved.startsWith(baseSep)) {
+    return null;
+  }
   return resolved;
 }
 
@@ -235,10 +323,12 @@ function serveStatic(req, res) {
     res.end();
     return;
   }
-  fs.stat(file, (err, stat) => {
-    // SPA fallback: if the path doesn't exist or names a directory, serve
-    // index.html so client-side routing still works. Matches Vite preview.
-    if (err || stat.isDirectory()) {
+  // lstat (not stat) so symlinks don't get followed. If `dist/` ever ends
+  // up containing a symlink — accidentally or maliciously — we don't want
+  // to serve whatever it points to outside the tree. Treat directories,
+  // missing files, and symlinks as the SPA fallback to index.html.
+  fs.lstat(file, (err, stat) => {
+    if (err || stat.isDirectory() || stat.isSymbolicLink()) {
       file = path.join(distDir, "index.html");
     }
     fs.readFile(file, (err2, buf) => {
@@ -258,17 +348,71 @@ function serveStatic(req, res) {
 }
 
 const server = http.createServer((req, res) => {
-  if (req.url && req.url.startsWith("/api/llm")) {
+  // Security headers go on EVERY response (success, 4xx, 5xx). Setting them
+  // up front means the writeHead calls below don't need to repeat them.
+  for (const [k, v] of Object.entries(SECURITY_HEADERS)) res.setHeader(k, v);
+
+  const method = (req.method || "").toUpperCase();
+  const url = req.url || "/";
+
+  if (url.startsWith("/api/llm")) {
+    if (!PROXY_METHODS.has(method)) {
+      res.writeHead(405, {
+        "content-type": "application/json",
+        allow: "GET, HEAD, POST, OPTIONS",
+      });
+      res.end(JSON.stringify({ error: { message: "method not allowed" } }));
+      return;
+    }
+    if (method === "OPTIONS") {
+      // Same-origin app — no CORS preflight is needed. Reply 204 with the
+      // allow header so a curious client doesn't get a misleading error.
+      res.writeHead(204, { allow: "GET, HEAD, POST, OPTIONS" });
+      res.end();
+      return;
+    }
     handleProxy(req, res).catch((err) => {
+      // Log the real error server-side; respond with a generic message so
+      // we don't leak filesystem paths or library internals across the wire.
+      console.error("[safe] proxy error:", err);
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: { message: String(err) } }));
+        res.end(JSON.stringify({ error: { message: "internal error" } }));
       }
     });
     return;
   }
+
+  if (!STATIC_METHODS.has(method)) {
+    res.writeHead(405, { "content-type": "text/plain", allow: "GET, HEAD" });
+    res.end("method not allowed");
+    return;
+  }
+
   serveStatic(req, res);
 });
+
+server.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      `[safe] port ${port} already in use. ` +
+        `Set VITE_PORT in apps/${slug}/.env.local to a free port.`,
+    );
+  } else {
+    console.error(`[safe] server error: ${err.code || err.message}`);
+  }
+  process.exit(1);
+});
+
+// Graceful shutdown: stop accepting new connections, then exit. The 2s
+// fallback timer covers the case where a long-running SSE stream is still
+// open — in that case we let the user re-take the port instead of waiting.
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000).unref();
+  });
+}
 
 // 127.0.0.1 only — no LAN exposure. Matches the launcher's bind.
 server.listen(port, "127.0.0.1", () => {
