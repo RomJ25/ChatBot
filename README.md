@@ -78,6 +78,23 @@ Open `apps/sniro/.env.local` (and the de-vincho one) and uncomment **one** prese
 
 The "internal" preset routes through the Vite dev/preview proxy (`/api/llm/*`) so the browser never sees the upstream URL and CORS can't bite you.
 
+### Scan-safe path (for AV/EDR-protected Windows machines)
+
+Corporate AV/EDR (Defender for Endpoint, CrowdStrike, SentinelOne) routinely flags the unsigned Bun-compiled `.exe` produced by `pnpm bundle:<slug>` — embedded runtime + no signature trips heuristic scanners regardless of what the code does. For deployments where the binary will land in front of one of those agents, use `scripts/serve-static.mjs` instead. The only executable that runs on the target is `node.exe` (signed by the OpenJS Foundation) — no Bun, no Vite at runtime, no compiled bundle.
+
+```bash
+pnpm install --offline --frozen-lockfile             # vendored store, no network
+# Edit apps/de-vincho/.env.local — set LLM_UPSTREAM (server-side only,
+# never inlined) and VITE_LLM_API_KEY (server-side only). Leave
+# VITE_LLM_BASE_URL as is — safe-build pins it to /api/llm.
+node scripts/safe-build.mjs de-vincho                # → apps/de-vincho/dist/
+node scripts/serve-static.mjs de-vincho              # → http://127.0.0.1:5174/
+```
+
+Same two commands work for sniro (substitute `sniro` for `de-vincho`; default port 5173).
+
+`scripts/serve-static.mjs` is a plain Node 20+ HTTP server that mirrors `scripts/launcher/proxy.ts`: drops Origin/Referer/Cookie + RFC 7230 hop-by-hop headers, injects `Authorization: Bearer` server-side from `.env.local`, 120s headers timeout, SSE-friendly response, returns 502 on upstream failure, binds to 127.0.0.1 only. The browser bundle never sees the upstream URL or the API key — both stay in the Node process.
+
 ### Standalone `.exe` (Windows, no install needed)
 
 `pnpm bundle:<slug>` produces a single-file Windows binary at `out/<slug>.exe` (~115 MB) with the UI, a local HTTP server, and an LLM proxy baked in.
