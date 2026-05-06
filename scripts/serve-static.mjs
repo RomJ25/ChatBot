@@ -26,6 +26,21 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
+// Fail fast on old Node. We use `fetch` (18.0+) and `Readable.fromWeb`
+// (17.0+); on Node 16 the proxy would throw a confusing "fetch is not
+// defined" mid-request instead of refusing to start. Better to print a
+// clear single-line error up front.
+{
+  const major = parseInt(process.versions.node.split(".")[0], 10);
+  if (!Number.isFinite(major) || major < 18) {
+    console.error(
+      `error: this server requires Node.js 18+ (have ${process.versions.node}). ` +
+        `Install a newer Node from https://nodejs.org and re-run.`,
+    );
+    process.exit(1);
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 
