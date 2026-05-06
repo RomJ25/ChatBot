@@ -32,6 +32,50 @@ pnpm dev:de-vincho       # opens http://localhost:5174
 
 ## Offline / air-gapped install (Windows team, no internet)
 
+### Simplest fully-offline install (recommended for security-scanned Windows)
+
+Build once on a connected machine, transfer one folder + Node installer to the Windows host, run. The Windows host gets **no `node_modules`, no `.pnpm-store`, no source, no unsigned third-party binaries** — just `dist/`, a single `serve.mjs`, your config, and the system `node.exe`.
+
+**Step 1 — on a connected machine** (Mac / Linux / Windows with internet):
+
+```bash
+git clone <internal-repo>/Sniro.git && cd Sniro
+corepack enable                                    # one-time; pnpm 10
+pnpm install --offline --frozen-lockfile           # vendored store, no network
+node scripts/safe-build.mjs de-vincho              # builds apps/de-vincho/dist/
+node scripts/safe-deploy.mjs de-vincho             # writes deploy-de-vincho/
+```
+
+(Use `sniro` instead of `de-vincho` for the team-internal assistant. Run both commands twice for both apps.)
+
+**Step 2 — also on the connected machine, gather two files for transfer:**
+
+- `deploy-de-vincho/` (the whole folder, ~2.5 MiB)
+- A signed Node 20+ Windows installer from https://nodejs.org/en/download/ (~30 MB `.msi`)
+
+**Step 3 — transfer to the offline Windows machine** (USB, share, secure file transfer).
+
+**Step 4 — on the offline Windows machine:**
+
+1. Run the Node `.msi` installer (signed by OpenJS Foundation — clears SmartScreen).
+2. Open `deploy-de-vincho\.env.local` in Notepad and fill in three values:
+   - `LLM_UPSTREAM=` your model gateway URL (e.g. `http://localhost:11434/v1` for a local Ollama)
+   - `VITE_LLM_API_KEY=` your API key (or leave blank for keyless local providers)
+   - `VITE_LLM_MODEL=` the model identifier
+3. Open a terminal in the `deploy-de-vincho\` folder and run:
+   ```bat
+   node serve.mjs
+   ```
+4. Open `http://127.0.0.1:5174/` in a browser.
+
+That's it. The only executable that runs is the signed `node.exe`. Detailed security posture in [Scan-safe path](#scan-safe-path-for-avedr-protected-windows-machines) below.
+
+**Why this is "fully offline":** the bundle is fully self-contained — every font, image, and JS asset is served from disk; the only network call is the LLM proxy hop to whatever `LLM_UPSTREAM` you configured. Use a local Ollama / LM Studio on the same machine for true zero-network operation.
+
+---
+
+### Detailed offline-install reference
+
 This repo vendors pnpm's content-addressable package store, so a fresh `git clone` ships every npm dependency needed to build and run. **No network calls during install.**
 
 ```bash
