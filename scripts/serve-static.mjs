@@ -197,6 +197,21 @@ function parseEnv(text) {
 }
 
 async function handleProxy(req, res) {
+  // Cheap up-front size check — if the client declares an oversized body
+  // via Content-Length, refuse it before doing anything else (including
+  // before the proxy-enabled check). The streaming cap below still runs
+  // for chunked/no-Content-Length requests, which can't be filtered here.
+  // Defense-in-depth so a misconfigured server can't be DoS'd via huge
+  // declared POSTs that get short-circuited to 502 with the body
+  // sitting unread in the kernel buffer.
+  const declared = parseInt(req.headers["content-length"] || "0", 10);
+  if (Number.isFinite(declared) && declared > MAX_PROXY_BODY) {
+    res.writeHead(413, { "content-type": "application/json" });
+    res.end(JSON.stringify({ error: { message: "request body too large" } }));
+    req.destroy();
+    return;
+  }
+
   if (!proxyEnabled) {
     res.writeHead(502, { "content-type": "application/json" });
     res.end(
