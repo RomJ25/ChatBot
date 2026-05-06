@@ -23,3 +23,7 @@ dist
 /scripts/launcher/embedded.*.assets/
 # Launcher env files created next to binaries during local testing
 *.env
+
+# Scan-safe deploy bundles produced by scripts/safe-deploy.mjs.
+/deploy-sniro/
+/deploy-de-vincho/

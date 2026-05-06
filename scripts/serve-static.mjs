@@ -295,7 +295,7 @@ function safeJoin(base, urlPath) {
   // treat them as separators and could escape the prefix check), and Windows
   // drive letters (a request like `/C:/Windows/...` after decode could
   // resolve to an absolute path on a Windows host).
-  if (decoded.includes(" ")) return null;
+  if (decoded.includes("\u0000")) return null;
   if (decoded.includes("\\")) return null;
   if (/^\/?[a-zA-Z]:/.test(decoded)) return null;
 

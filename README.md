@@ -93,7 +93,18 @@ node scripts/serve-static.mjs de-vincho              # → http://127.0.0.1:5174
 
 Same two commands work for sniro (substitute `sniro` for `de-vincho`; default port 5173).
 
-`scripts/serve-static.mjs` is a plain Node 20+ HTTP server that mirrors `scripts/launcher/proxy.ts`: drops Origin/Referer/Cookie + RFC 7230 hop-by-hop headers, injects `Authorization: Bearer` server-side from `.env.local`, 120s headers timeout, SSE-friendly response, returns 502 on upstream failure, binds to 127.0.0.1 only. The browser bundle never sees the upstream URL or the API key — both stay in the Node process.
+`scripts/serve-static.mjs` is a plain Node 20+ HTTP server that mirrors `scripts/launcher/proxy.ts`: drops Origin/Referer/Cookie + RFC 7230 hop-by-hop headers, injects `Authorization: Bearer` server-side from `.env.local`, 120s headers timeout, SSE-friendly response, returns 502 on upstream failure, binds to 127.0.0.1 only. The browser bundle never sees the upstream URL or the API key — both stay in the Node process. Strict CSP, X-Frame-Options DENY, nosniff, and no-referrer headers go on every response. Method allow-list (TRACE/CONNECT/PUT/PATCH → 405). Path traversal blocked for raw `../`, URL-encoded `%2e%2e`, null bytes, backslashes, drive letters, and symlinks. 2 MiB body cap on the proxy. Graceful EADDRINUSE / SIGINT / SIGTERM handling.
+
+#### Minimal deploy bundle (no node_modules on the target)
+
+After `pnpm install` the build chain leaves unsigned native binaries in `node_modules/` (esbuild ~10 MB, rollup `.node` addons). They're only needed at build time — `serve-static.mjs` itself imports only `node:*` built-ins. To keep those binaries off the security-scanned target:
+
+```bash
+node scripts/safe-build.mjs de-vincho
+node scripts/safe-deploy.mjs de-vincho     # → deploy-de-vincho/
+```
+
+`deploy-de-vincho/` contains exactly four things: `serve.mjs` (path-rewritten so it looks for files alongside itself), `dist/`, `.env.local`, `README.txt`. No `node_modules`, no `.pnpm-store`, no source. Total ~2.5 MiB. Transfer to the Windows machine and run `node serve.mjs` — the only executable on disk for runtime is the system `node.exe`.
 
 ### Standalone `.exe` (Windows, no install needed)
 
