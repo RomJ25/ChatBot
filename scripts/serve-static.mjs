@@ -187,7 +187,7 @@ async function handleProxy(req, res) {
     res.end(
       JSON.stringify({
         error: {
-          message: `LLM_UPSTREAM not configured in apps/${slug}/.env.local`,
+          message: `LLM_UPSTREAM not configured in ${envPath}`,
         },
       }),
     );
@@ -396,7 +396,7 @@ server.on("error", (err) => {
   if (err.code === "EADDRINUSE") {
     console.error(
       `[safe] port ${port} already in use. ` +
-        `Set VITE_PORT in apps/${slug}/.env.local to a free port.`,
+        `Set VITE_PORT in ${envPath} to a free port.`,
     );
   } else {
     console.error(`[safe] server error: ${err.code || err.message}`);
@@ -419,7 +419,7 @@ server.listen(port, "127.0.0.1", () => {
   console.log(`[safe] ${slug} → http://127.0.0.1:${port}/`);
   if (!proxyEnabled) {
     console.log(
-      `[safe] WARNING: LLM_UPSTREAM not set in apps/${slug}/.env.local — chat will return 502s.`,
+      `[safe] WARNING: LLM_UPSTREAM not set in ${envPath} — chat will return 502s.`,
     );
   } else {
     console.log(`[safe] proxy: /api/llm → ${upstream}`);

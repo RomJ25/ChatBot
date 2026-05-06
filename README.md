@@ -101,10 +101,13 @@ After `pnpm install` the build chain leaves unsigned native binaries in `node_mo
 
 ```bash
 node scripts/safe-build.mjs de-vincho
-node scripts/safe-deploy.mjs de-vincho     # → deploy-de-vincho/
+node scripts/safe-deploy.mjs de-vincho                  # default: scrubs .env.local
+node scripts/safe-deploy.mjs de-vincho --with-secrets   # ships the source .env.local
 ```
 
 `deploy-de-vincho/` contains exactly four things: `serve.mjs` (path-rewritten so it looks for files alongside itself), `dist/`, `.env.local`, `README.txt`. No `node_modules`, no `.pnpm-store`, no source. Total ~2.5 MiB. Transfer to the Windows machine and run `node serve.mjs` — the only executable on disk for runtime is the system `node.exe`.
+
+**`.env.local` handling.** By default the bundle ships a placeholder `.env.local` so internal hostnames (e.g. an internal LLM gateway URL) and the API key don't ride in the file across DLP-scanned transfer paths — the operator fills in `LLM_UPSTREAM` and `VITE_LLM_API_KEY` on the target machine. Pass `--with-secrets` to copy the source `.env.local` verbatim when the bundle stays inside the trust zone end-to-end.
 
 ### Standalone `.exe` (Windows, no install needed)
 

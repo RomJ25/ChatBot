@@ -29,17 +29,29 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
 
+// Parse flags first so `--with-secrets` can sit anywhere on the command
+// line and not be mistaken for the target dir.
+const args = process.argv.slice(2);
+const COPY_SECRETS = args.includes("--with-secrets");
+const positional = args.filter((a) => !a.startsWith("--"));
+
 const VALID = new Set(["sniro", "de-vincho"]);
-const slug = process.argv[2];
+const slug = positional[0];
 if (!slug || !VALID.has(slug)) {
   console.error(
-    `usage: node scripts/safe-deploy.mjs <${[...VALID].join("|")}> [target-dir]`,
+    `usage: node scripts/safe-deploy.mjs <${[...VALID].join("|")}> [target-dir] [--with-secrets]\n` +
+      `\n` +
+      `By default the bundle's .env.local is a placeholder — internal\n` +
+      `hostnames and API keys stay out of the bundle so it can pass DLP\n` +
+      `inspection on the way to the target. Pass --with-secrets to copy\n` +
+      `the real apps/<slug>/.env.local instead (only when the bundle never\n` +
+      `crosses a DLP boundary).`,
   );
   process.exit(1);
 }
 
 const targetDir = path.resolve(
-  process.argv[3] || path.join(repoRoot, `deploy-${slug}`),
+  positional[1] || path.join(repoRoot, `deploy-${slug}`),
 );
 
 const distSrc = path.join(repoRoot, "apps", slug, "dist");
@@ -118,14 +130,24 @@ fs.mkdirSync(targetDir, { recursive: true });
 copyDir(distSrc, path.join(targetDir, "dist"));
 fs.writeFileSync(path.join(targetDir, "serve.mjs"), serveOut);
 
-if (fs.existsSync(envSrc)) {
+// .env.local handling. Default is a scrubbed placeholder so the bundle
+// can pass DLP inspection without leaking the source repo's LLM_UPSTREAM
+// (which often discloses internal infra topology) or the API key.
+// `--with-secrets` opts back in to copying the real source .env.local
+// when the bundle stays inside the trust zone end-to-end.
+if (COPY_SECRETS && fs.existsSync(envSrc)) {
   fs.copyFileSync(envSrc, path.join(targetDir, ".env.local"));
 } else {
-  // Bare template if the operator hasn't configured anything yet — the
-  // server will start in "configuration required" mode either way.
   fs.writeFileSync(
     path.join(targetDir, ".env.local"),
-    `# ${slug} runtime config — edit before running serve.mjs.\n` +
+    `# ${slug} runtime config — fill in before running serve.mjs.\n` +
+      `# safe-deploy ships a placeholder by default so internal hostnames\n` +
+      `# and API keys don't ride in the bundle. Re-run safe-deploy with\n` +
+      `# --with-secrets to copy from apps/${slug}/.env.local instead.\n` +
+      `#\n` +
+      `# LLM_UPSTREAM is server-only — never inlined into the browser.\n` +
+      `# VITE_LLM_API_KEY is server-only too (build-time blank, runtime\n` +
+      `# injects it as a Bearer token from this file).\n` +
       `LLM_UPSTREAM=\n` +
       `VITE_LLM_API_KEY=\n` +
       `VITE_LLM_MODEL=\n` +
@@ -174,11 +196,20 @@ console.log(`[safe-deploy]   serve.mjs   (${serveOut.length} bytes)`);
 console.log(
   `[safe-deploy]   dist/       (${countFiles(path.join(targetDir, "dist"))} files, ${formatBytes(dirSize(path.join(targetDir, "dist")))})`,
 );
-console.log(`[safe-deploy]   .env.local`);
+console.log(
+  `[safe-deploy]   .env.local  (${COPY_SECRETS ? "copied from apps/" + slug + "/.env.local" : "placeholder — fill in on target"})`,
+);
 console.log(`[safe-deploy]   README.txt`);
 console.log(
   `[safe-deploy] transfer ${path.basename(targetDir)}/ to the target machine, then: \`cd ${path.basename(targetDir)} && node serve.mjs\``,
 );
+if (!COPY_SECRETS) {
+  console.log(
+    `[safe-deploy] note: .env.local is a placeholder by default. On the target, edit it with your\n` +
+      `[safe-deploy]       LLM_UPSTREAM and VITE_LLM_API_KEY before running serve.mjs. Re-run with\n` +
+      `[safe-deploy]       --with-secrets to ship the source .env.local instead (skip DLP scrub).`,
+  );
+}
 
 function copyDir(src, dst) {
   fs.mkdirSync(dst, { recursive: true });
