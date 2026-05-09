@@ -82,7 +82,7 @@ function MarkdownInner({ children, className, streaming }: Props) {
               <pre
                 dir="ltr"
                 {...rest}
-                className="my-4 rounded-xl p-4 overflow-x-auto shadow-inner text-left"
+                className="my-4 rounded-xl p-4 overflow-x-auto shadow-inner text-left leading-[1.45]"
                 style={{
                   background: "rgba(var(--ink-rgb), 0.04)",
                   border: "1px solid rgba(var(--accent-rgb), 0.15)",
@@ -111,7 +111,7 @@ function MarkdownInner({ children, className, streaming }: Props) {
           h1({ children }: any) {
             return (
               <h1
-                className="font-semibold text-[22px] mt-6 mb-3 tracking-tight"
+                className="font-semibold text-[24px] mt-6 mb-3 tracking-tight"
                 style={{
                   color: "var(--ink)",
                   fontFamily: "var(--font-display)",
@@ -125,7 +125,7 @@ function MarkdownInner({ children, className, streaming }: Props) {
           h2({ children }: any) {
             return (
               <h2
-                className="font-semibold text-[19px] mt-5 mb-2.5 tracking-tight"
+                className="font-semibold text-[20px] mt-5 mb-2.5 tracking-tight"
                 style={{
                   color: "var(--ink)",
                   fontFamily: "var(--font-display)",
@@ -139,7 +139,7 @@ function MarkdownInner({ children, className, streaming }: Props) {
           h3({ children }: any) {
             return (
               <h3
-                className="font-semibold text-[16px] mt-4 mb-2 tracking-tight"
+                className="font-semibold text-[17px] mt-4 mb-2 tracking-tight"
                 style={{
                   color: "var(--ink)",
                   fontFamily: "var(--font-display)",
@@ -152,48 +152,9 @@ function MarkdownInner({ children, className, streaming }: Props) {
           },
           ol({ children }: any) {
             return (
-              <ol className="list-decimal pr-6 my-4 space-y-1.5 text-[15.5px] leading-[1.7]">
+              <ol className="list-decimal pr-6 my-4 space-y-1.5 text-[15.5px] leading-[1.6]">
                 {children}
               </ol>
-            );
-          },
-          table({ children }: any) {
-            return (
-              <div
-                className="my-4 overflow-x-auto rounded-lg"
-                style={{ border: "1px solid rgba(var(--accent-rgb), 0.1)" }}
-              >
-                <table className="border-collapse w-full text-[14px]">
-                  {children}
-                </table>
-              </div>
-            );
-          },
-          th({ children }: any) {
-            return (
-              <th
-                className="text-right px-3 py-2 font-semibold"
-                style={{
-                  borderBottom: "1px solid rgba(var(--accent-rgb), 0.2)",
-                  background: "rgba(var(--accent-rgb), 0.04)",
-                  color: "var(--ink)",
-                }}
-              >
-                {children}
-              </th>
-            );
-          },
-          td({ children }: any) {
-            return (
-              <td
-                className="text-right px-3 py-2"
-                style={{
-                  borderBottom: "1px solid rgba(var(--muted-rgb), 0.15)",
-                  color: "var(--ink-soft)",
-                }}
-              >
-                {children}
-              </td>
             );
           },
           hr() {

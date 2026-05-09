@@ -69,7 +69,7 @@
 
   /* Type — Cormorant Garamond italic for headline, Frank Ruehl Libre for body.
      Hebrew gets a real old-style serif, not the sans-serif Heebo. */
-  --font-display: "Cormorant Garamond", "EB Garamond", Georgia, serif;
+  --font-display: "Cormorant Garamond", "Frank Ruhl Libre", "David Libre", "EB Garamond", Georgia, serif;
   --font-body: "Frank Ruhl Libre", "Heebo", "EB Garamond", Georgia, serif;
   --display-tracking: 0.005em;
   --display-style: italic;

@@ -211,7 +211,7 @@ export default function ChatBot({
   suggestions,
   dropCap = false,
   botName = "מערכת פנימית",
-  thinkingText = "המערכת חושבת...",
+  thinkingText = "המערכת חושבת…",
 }: ChatBotProps) {
   const client = useMemo(
     () => createDefaultClient(systemPrompt),
@@ -909,7 +909,7 @@ export default function ChatBot({
         onDrop={handleDrop}
       >
         <header
-          className="flex items-center justify-between mb-8 px-2 bot-message-enter hw-accelerate shrink-0"
+          className="chat-header flex items-center justify-between mb-8 px-2 bot-message-enter hw-accelerate shrink-0"
           data-streaming={isStreaming ? "true" : "false"}
         >
           <div className="flex items-center gap-3">
@@ -954,7 +954,7 @@ export default function ChatBot({
             )}
             <div>
               <h1
-                className="font-semibold text-[17px] leading-tight"
+                className="chat-headline font-semibold text-[19px] leading-tight"
                 style={{
                   color: "var(--ink)",
                   fontFamily: "var(--font-display)",
@@ -1006,7 +1006,7 @@ export default function ChatBot({
           role="log"
           aria-live="polite"
           aria-busy={isStreaming}
-          className={`flex-1 overflow-y-auto overscroll-contain mb-6 px-2 pt-2 pb-4 relative z-10 space-y-7 chat-scroll-mask transition-opacity duration-[400ms] ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
+          className={`chat-message-list flex-1 overflow-y-auto overscroll-contain mb-6 px-2 pt-2 pb-4 relative z-10 space-y-6 chat-scroll-mask transition-opacity duration-[400ms] ease-in-out hw-accelerate ${isInputFocused ? "opacity-80" : "opacity-100"}`}
         >
           {messages.map((msg, i) => (
             <MessageItem
@@ -1115,7 +1115,7 @@ export default function ChatBot({
           style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}
         >
           {suggestions.length > 0 && (
-            <div className="flex flex-wrap gap-x-2 gap-y-3 mb-4">
+            <div className="chip-strip flex flex-wrap gap-x-2 gap-y-3 mb-4">
               {suggestions.map((chip, idx) => (
                 <button
                   key={idx}
@@ -1307,15 +1307,15 @@ const MessageItem = memo(function MessageItem({
                 {msg.error ? "הודעת מערכת" : botName}
               </span>
               <span
-                className="text-[10px] text-etched font-medium"
-                style={{ color: "var(--muted)" }}
+                className="text-[11px] text-etched font-medium"
+                style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}
               >
                 {msg.timestamp}
               </span>
             </div>
 
             <div
-              className={`glass-panel bot-bubble specular-highlight hw-accelerate rounded-[24px] rounded-tr-[8px] px-7 py-6 inline-block relative group max-w-[95%] ${msg.error ? "error-bubble" : ""} ${msg.isWelcome ? "welcome-bubble" : ""}`}
+              className={`glass-panel bot-bubble specular-highlight hw-accelerate rounded-[24px] rounded-tr-[8px] px-6 py-5 inline-block relative group max-w-[95%] ${msg.error ? "error-bubble" : ""} ${msg.isWelcome ? "welcome-bubble" : ""}`}
               style={{
                 boxShadow:
                   "0 20px 40px -12px rgba(var(--ink-rgb), 0.06), 0 0 0 1px rgba(var(--accent-rgb), 0.04)",
@@ -1384,8 +1384,8 @@ const MessageItem = memo(function MessageItem({
       <div className="max-w-[75%] flex flex-col items-end">
         <div className="flex items-center gap-2 mb-1">
           <span
-            className="text-[10px] text-etched font-medium"
-            style={{ color: "var(--muted)" }}
+            className="text-[11px] text-etched font-medium"
+            style={{ color: "var(--muted)", fontVariantNumeric: "tabular-nums" }}
           >
             {msg.timestamp}
           </span>
@@ -1445,6 +1445,14 @@ function describeError(err: LLMError): string {
   }
   if (err.code === "http" && err.status === 429) {
     return `**חרגת ממגבלת הקצב (429).**\n\nחכה רגע ונסה שוב, או החלף ספק/דגם.\n\n\`\`\`\n${err.message}\n\`\`\``;
+  }
+  if (err.code === "http" && err.status === 502) {
+    // 502 from the launcher's own proxy means it couldn't reach the configured
+    // upstream (DNS fail / ECONNREFUSED / TCP timeout). The same status from a
+    // real upstream gateway is rarer in this deployment (direct LLM endpoints,
+    // not fronted by a CDN). Either way, the actionable hint is the same:
+    // verify the upstream URL and that the LLM server is actually running.
+    return `**השרת לא נגיש (502).**\n\nוודא שהכתובת ב-\`LLM_UPSTREAM\` נכונה ושהשרת באמת פועל. אם אתה משתמש ב-Ollama או LM Studio, בדוק שהם רצים ומאזינים על הפורט הצפוי.\n\n\`\`\`\n${err.message}\n\`\`\``;
   }
   if (err.code === "http") {
     return `**שגיאת HTTP ${err.status ?? ""}.**\n\n\`\`\`\n${err.message}\n\`\`\``;

@@ -135,7 +135,7 @@ body {
  * ============================================================ */
 
 ::selection { background: rgba(var(--accent-rgb), 0.15); color: var(--ink); text-shadow: none; }
-.font-heebo { font-family: var(--font-body); letter-spacing: var(--display-tracking); }
+.font-heebo { font-family: var(--font-body); }
 
 /* iOS quality-of-life: kill the gray tap-flash, suppress the
    300 ms double-tap-zoom delay on interactive elements. */
@@ -162,20 +162,17 @@ textarea:focus-visible, input:focus-visible {
   transform: translateZ(0);
 }
 
-.premium-prose { max-width: 65ch; color: var(--ink); }
-.premium-prose:hover p, .premium-prose:hover ul, .premium-prose:hover ol, .premium-prose:hover blockquote { color: var(--muted); text-shadow: none; transition: color 0.4s var(--ease-fluid); }
-.premium-prose p:hover, .premium-prose ul:hover, .premium-prose ol:hover, .premium-prose blockquote:hover { color: var(--ink); text-shadow: 0px 4px 12px rgba(var(--ink-rgb), 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85); transition: color 0.15s var(--ease-fluid); }
-.premium-prose p { margin-bottom: 1.35em; line-height: 1.7; font-size: 15.5px; transition: color 0.4s var(--ease-fluid); }
+.premium-prose { max-width: 65ch; color: var(--ink); font-feature-settings: "kern" 1, "liga" 1, "calt" 1; }
+.premium-prose p { margin-bottom: 1.35em; line-height: 1.6; font-size: 15.5px; }
 .premium-prose p:last-child { margin-bottom: 0; }
 
 .premium-prose strong {
   font-weight: 600; color: inherit;
   background: linear-gradient(120deg, rgba(var(--accent-rgb), 0.08) 0%, rgba(var(--accent-rgb), 0.02) 100%);
-  padding: 0.1em 0.35em; border-radius: 6px;
+  padding: 0.05em 0.25em; border-radius: 6px;
   box-shadow: inset 0 -1px 0 rgba(var(--accent-rgb), 0.15), 0 2px 4px rgba(var(--accent-rgb), 0.03);
-  letter-spacing: -0.01em; margin: 0 0.1em; transition: color 0.4s var(--ease-fluid);
+  letter-spacing: -0.01em; margin: 0;
 }
-.premium-prose p:hover strong, .premium-prose ul:hover strong, .premium-prose ol:hover strong { color: var(--ink); }
 
 .premium-prose code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -185,7 +182,7 @@ textarea:focus-visible, input:focus-visible {
 }
 .premium-prose pre code {
   color: inherit; background: transparent; border: 0; padding: 0; border-radius: 0;
-  box-shadow: none; font-size: 13px; margin: 0;
+  box-shadow: none; font-size: 13px; line-height: 1.45; margin: 0;
 }
 
 .premium-prose blockquote {
@@ -196,20 +193,18 @@ textarea:focus-visible, input:focus-visible {
 }
 .premium-prose blockquote:hover { border-right-color: var(--accent); background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.06)); }
 
-.premium-prose ul { margin-top: 1.5em; margin-bottom: 1.5em; padding-right: 1.5em; list-style: none; transition: color 0.4s var(--ease-fluid); }
-.premium-prose li { position: relative; margin-bottom: 1em; line-height: 1.65; font-size: 15.5px; }
+.premium-prose ul { margin-top: 1.5em; margin-bottom: 1.5em; padding-right: 1.5em; list-style: none; }
+.premium-prose li { position: relative; margin-bottom: 1em; line-height: 1.55; font-size: 15.5px; }
 .premium-prose li:last-child { margin-bottom: 0; }
 .premium-prose ul li::before {
-  content: ""; position: absolute; right: -1.4em; top: 0.65em; width: 6px; height: 6px;
+  content: ""; position: absolute; right: -1.4em; top: 0.55em; width: 6px; height: 6px;
   border-radius: 50%; background: var(--accent);
   box-shadow: 0 0 10px rgba(var(--accent-rgb), 0.6), inset 0 1px 2px rgba(255,255,255,0.8);
-  transition: all 0.4s var(--ease-fluid);
 }
-.premium-prose:hover ul:not(:hover) li::before { background: var(--muted); box-shadow: none; }
 
 .text-ink {
   color: var(--ink);
-  text-shadow: 0px 4px 12px rgba(var(--ink-rgb), 0.05), 0px 1px 0px rgba(255, 255, 255, 0.85);
+  text-shadow: 0px 1px 0px rgba(255, 255, 255, 0.85);
   -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility;
 }
 
@@ -291,6 +286,25 @@ textarea:focus-visible, input:focus-visible {
   transition: all 0.1s ease-out;
 }
 
+/* Mobile: collapse the suggestion chip grid to a single horizontally
+   scrollable row. With four chips stacked at 375 px width the input
+   area eats ~200 px of vertical space, leaving the welcome bubble
+   without enough room to render its text on a 667 px tall viewport.
+   A scroll strip recovers that space without dropping any chips. */
+@media (max-width: 480px) {
+  .chip-strip {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    margin-inline: -8px;
+    padding-inline: 8px;
+  }
+  .chip-strip::-webkit-scrollbar { display: none; }
+  .chip-strip > * { flex-shrink: 0; }
+}
+
 .bot-message-enter { animation: glassMaterialize 0.5s var(--ease-fluid) forwards; }
 .user-message-enter { animation: slideRightFade 0.5s var(--ease-fluid) forwards; }
 
@@ -324,8 +338,8 @@ textarea:focus-visible, input:focus-visible {
 .text-etched { text-shadow: 0px 1px 0px rgba(255, 255, 255, 0.9); }
 
 .chat-scroll-mask {
-  mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 100%);
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 97%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 2%, black 97%, transparent 100%);
 }
 
 @keyframes slideUpFade {
@@ -419,7 +433,7 @@ textarea:focus-visible, input:focus-visible {
   height: auto;
   object-fit: var(--welcome-hero-fit, contain);
   object-position: var(--welcome-hero-position, center);
-  margin: 0 auto 1.25rem;
+  margin: 0.25rem auto 1.5rem;
   border-radius: var(--welcome-hero-shape, 16px);
   box-shadow: var(--welcome-hero-frame);
   background: var(--welcome-hero-bg, rgba(255, 255, 255, 0.6));
@@ -435,15 +449,16 @@ textarea:focus-visible, input:focus-visible {
   font-style: var(--display-style);
   font-weight: 600;
   font-size: 3.6em;
-  line-height: 0.9;
-  padding: 0.05em 0 0.05em 0.18em;
+  line-height: 1;
+  padding: 0.05em 0 0 0.18em;
   margin-inline-start: 0.18em;
   color: var(--accent);
   text-shadow: 0 1px 0 rgba(255, 255, 255, 0.4);
 }
 @media (max-width: 480px) {
   .welcome-bubble[data-dropcap="1"] .premium-prose > p:first-of-type::first-letter {
-    font-size: 2.6em;
+    font-size: 2em;
+    line-height: 1;
   }
 }
 
@@ -496,4 +511,19 @@ textarea:focus-visible, input:focus-visible {
 .bubble-rail.error {
   background: linear-gradient(to bottom, rgba(var(--error-rgb), 0.6), rgba(var(--error-rgb), 0.1));
   box-shadow: 0 0 8px rgba(var(--error-rgb), 0.3);
+}
+
+/* Mobile spacing pass — desktop classes leak straight to small viewports
+   without these. The six perf overrides earlier in this file (glass blur,
+   chip-strip scroll, aurora hide, welcome-hero size, drop-cap size,
+   margin-rule hide) are independent and untouched. */
+@media (max-width: 480px) {
+  .chat-shell { padding-block: 1.25rem !important; }
+  .chat-header { margin-bottom: 1rem !important; }
+  .chat-headline { font-size: 17px !important; }
+  .chat-message-list { row-gap: 1.25rem; }
+  .bot-bubble { padding: 1rem 1.25rem !important; }
+  .user-bubble { padding: 0.875rem 1.125rem !important; }
+  .premium-prose p { line-height: 1.55; }
+  .premium-prose li { line-height: 1.5; }
 }
